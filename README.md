@@ -4,30 +4,23 @@
 High‑performance, multi‑mode wordlist generator designed for **Hashcat** and **John the Ripper**.  
 Streams to STDOUT for live cracking or writes compressed/split files for large runs.
 
----
-
-## ✅ What this README covers (explicit & complete)
-
-This README documents **every CLI option** implemented in `pwforge.py` and shows **concrete examples** for:
-- Piping into **Hashcat** and **John the Ripper**
-- Writing **plain** / **gzip** files (with **split** support)
-- **Parallel** multi‑process generation (`--mp-workers`), and how it differs from `--split`
-- Deterministic runs (`--seed`) and chunked batching (`--chunk`)
-- Mode‑specific flags (walks, Markov, PCFG, prince, etc.)
-
-> Source of truth for options: the uploaded `pwforge.py`. See the **CLI Options** section below for a 1:1 mapping.
+> This README reflects all options implemented in `pwforge.py`, including **neural** generation, **hybrid/combo** modes, entropy filtering, chunking, and multi‑process sharding.
 
 ---
 
-## 🔧 Installation
+## 🔧 Requirements
 
+- **Python 3.8+** (tested on Linux, WSL, macOS)
+- Optional for `--mode neural`: **PyTorch** (CPU or CUDA build). Install from https://pytorch.org/get-started/locally/
+- Optional for large gzip merges: `gzip`, `zcat` available on your OS
+
+### Quick check
 ```bash
-git clone https://github.com/awillard1/pwforge.git
-cd pwforge
-python3 pwforge.py --help
+python3 --version
+python3 -c "import sys; print('ok')"
+# Neural users:
+python3 -c "import torch, platform; print('torch', torch.__version__,'cuda', torch.cuda.is_available())"
 ```
-
-> Requires **Python 3.8+**
 
 ---
 
@@ -36,177 +29,236 @@ python3 pwforge.py --help
 ### Stream directly to Hashcat (no disk I/O)
 ```bash
 # Random passwords
-python3 pwforge.py --mode pw --count 1000000 | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode pw --count 1_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
 
 # Markov (requires training corpus)
-python3 pwforge.py --mode markov --markov-train rockyou.txt --count 2000000 | hashcat -a 0 -m 0 hashes.raw-md5
+python3 pwforge.py --mode markov --markov-train rockyou.txt --count 2_000_000 | hashcat -a 0 -m 0 hashes.md5
 
 # PCFG (requires training corpus)
-python3 pwforge.py --mode pcfg --pcfg-train rockyou.txt --count 1000000 | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode pcfg --pcfg-train rockyou.txt --count 1_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
 ```
 
-### Stream directly to John the Ripper (stdin)
+### Stream to John the Ripper (stdin)
 ```bash
-python3 pwforge.py --mode pw --count 1000000 | john --stdin --format=nt hashes/*
+python3 pwforge.py --mode pw --count 1_000_000 | john --stdin --format=nt hashes/*
 ```
-> **Note:** John’s `--fork` does **not** work with stdin. For multi‑core JtR, write a file and use `--wordlist`:
-
+> John’s `--fork` does **not** work with stdin. For multi‑core JtR use a file:
 ```bash
-python3 pwforge.py --mode walk --count 2000000 --out walks.txt --no-stdout
+python3 pwforge.py --mode walk --count 2_000_000 --out walks.txt --no-stdout
 john --wordlist=walks.txt --format=nt --fork=16 hashes/*
 ```
 
 ---
 
-## 💾 Writing Files (Plain / Gzip / Split)
+## 💻 Neural Mode (`--mode neural`)
+
+Neural generation uses a character‑level LSTM checkpoint (`.pt`) and samples candidates up to your length bounds.
+
+```bash
+# 2M neural candidates to hashcat
+python3 pwforge.py --mode neural --model finetuned_model.pt   --batch-size 512 --max-gen-len 32   --min 8 --max 20 --count 2_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
+```
+
+- PWForge auto‑selects **CUDA** if available, else CPU.
+- The checkpoint is trained with `finetune_neural.py` (see the **How PWForge Works** section below). Hyperparameters must match your checkpoint.
+
+**File output with true multi‑process sharding**
+```bash
+python3 pwforge.py --mode neural --model finetuned_model.pt   --count 20_000_000 --mp-workers 8   --out neural.txt.gz --gz --no-stdout
+# => neural_w00.txt.gz ... neural_w07.txt.gz
+```
+
+---
+
+## 🧠 Other Advanced Modes
+
+### Hybrid (`--mode hybrid`)
+Apply a subset of **Hashcat‑style rules** to a dictionary, optionally combining with a light mask.
+```bash
+python3 pwforge.py --mode hybrid   --dict words_demo.txt --rules rules.txt   --mask "?d?d"   --count 2_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
+```
+
+### Combo (`--mode combo`)
+Weighted mixture of multiple generators in one stream.
+```bash
+# 60% walk, 30% prince, 10% pcfg
+python3 pwforge.py --mode combo   --combo "walk:0.6,prince:0.3,pcfg:0.1"   --dict words_demo.txt --pcfg-train rockyou.txt   --count 3_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
+```
+
+---
+
+## 🔍 Entropy & Dictionary Filtering
+
+```bash
+# Skip low‑entropy strings and drop anything in denylist.txt
+python3 pwforge.py --mode pw --min-entropy 2.2 --no-dict denylist.txt   --count 2_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
+```
+
+- `--min-entropy <H>`: keep only candidates with Shannon entropy ≥ H  
+- `--no-dict path.txt`: drop any candidate (case‑insensitive) present in the file
+
+---
+
+## 💾 Output (Plain / Gzip / Split)
 
 ```bash
 # Plain file
-python3 pwforge.py --mode pw --count 5000000 --out pw.txt --no-stdout
+python3 pwforge.py --mode pw --count 5_000_000 --out pw.txt --no-stdout
 
-# Gzip file (recommended for huge runs)
-python3 pwforge.py --mode walk --count 5000000 --out walks.txt.gz --gz --no-stdout
+# Gzip (recommended for huge runs)
+python3 pwforge.py --mode walk --count 5_000_000 --out walks.txt.gz --gz --no-stdout
 
 # Split into 8 parts (mutually exclusive with --mp-workers)
-python3 pwforge.py --mode pw --count 80000000 --split 8 --out pw.txt --gz --no-stdout
+python3 pwforge.py --mode pw --count 80_000_000 --split 8 --out pw.txt --gz --no-stdout
 # => pw_00000000.txt.gz ... pw_00000007.txt.gz
 ```
 
-### Fast paths on WSL/Linux
-Avoid `/mnt/c/...` for heavy I/O; prefer Linux FS or tmpfs:
+**WSL/Linux tip:** avoid `/mnt/c/...` for heavy I/O; use `/home` or `/dev/shm`:
 ```bash
-python3 pwforge.py --mode pw --count 10000000 --out /dev/shm/pw.txt --no-stdout
+python3 pwforge.py --mode pw --count 10_000_000 --out /dev/shm/pw.txt --no-stdout
 ```
 
 ---
 
-## ⚡ Multi‑Process Generation (`--mp-workers`)
+## ⚡ True Multi‑Process Sharding (`--mp-workers`)
 
-`--mp-workers N` launches **N child processes**. Each writes its own shard (e.g., `file_w00.txt[.gz]`).  
-**Requirements:** `--out` **and** `--no-stdout`.
+`--mp-workers N` launches **N child processes**. Each writes a shard (e.g., `file_w00.txt[.gz]`).  
+**Requires** `--out` **and** `--no-stdout`.
 
 ```bash
-# 8 parallel subprocesses; gzip output; deterministic seed
-python3 pwforge.py --mode markov   --markov-train rockyou.txt   --count 80000000   --mp-workers 8   --out markov.txt.gz --gz --no-stdout --seed 42
+python3 pwforge.py --mode markov   --markov-train rockyou.txt   --count 80_000_000 --mp-workers 8   --out markov.txt.gz --gz --no-stdout --seed 42
 # => markov_w00.txt.gz ... markov_w07.txt.gz
 ```
 
-> `--mp-workers` and `--split` are **mutually exclusive** (use one strategy).
+> `--mp-workers` and `--split` are **mutually exclusive**. Use one strategy.
 
 ---
 
-## 🧭 Modes & Key Examples
+## 🧭 Modes & Examples
 
-### 1) `--mode pw` (random passwords)
-General purpose random with class policy and custom charset.
+- `pw` – random passwords (`--charset`, `--exclude-ambiguous`, `--require`)
+- `walk` – keyboard adjacency (QWERTY/QWERTZ/AZERTY or `--keymap-file`, `--starts-file`, `--suffix-digits`)
+- `both` – combine `pw` + `walk` (`--both-policy split|each`)
+- `mask` – word+year+symbol (`--dict`, `--years-file`, `--symbols-file`, `--upper-first`)
+- `passphrase` – multi‑word phrases (`--dict`, `--words`, `--sep`, `--upper-first`)
+- `numeric` – digits only
+- `syllable` – pronounceable using templates (`--template`, `--upper-first`)
+- `prince` – word combination enumeration (`--prince-min/max`, `--sep`, `--bias-terms`, `--prince-suffix-digits`, `--prince-symbol`)
+- `markov` – trained corpus (`--markov-train`, `--markov-order 1..5`)
+- `pcfg` – trained corpus (`--pcfg-train`)
+- `mobile-walk` – phone keypad walks
+- `hybrid` – rules + mask over a dictionary (`--rules`, `--mask`)
+- `combo` – weighted mixture (`--combo "mode:w,mode:w,..."`)
+- `neural` – LSTM checkpoint (`--model`, `--batch-size`, `--max-gen-len`, `--embed-dim`, `--hidden-dim`, `--num-layers`, `--dropout`)
 
+---
+
+## 🔌 Piping & Files: Practical Recipes
+
+### Stream to Hashcat
 ```bash
-# 1M random passwords 8..16 chars; require upper/lower/digit/symbol
-python3 pwforge.py --mode pw --min 8 --max 16 --count 1000000   --require upper,lower,digit,symbol | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode pw --count 1_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode walk --count 2_000_000 --starts-file starts.json | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode markov --markov-train rockyou.txt --count 2_000_000 | hashcat -a 0 -m 0 hashes.md5
+python3 pwforge.py --mode pcfg --pcfg-train rockyou.txt --count 1_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode neural --model finetuned_model.pt --count 1_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
 ```
 
-**Useful flags**: `--charset`, `--exclude-ambiguous`, `--require`, `--seed`
-
----
-
-### 2) `--mode walk` (keyboard walks)
-QWERTY/QWERTZ/AZERTY adjacency walks; optional custom graph and starts list.
-
+### Stream to John
 ```bash
-# QWERTZ with custom starts and suffix digits appended
-python3 pwforge.py --mode walk --keymap qwertz   --starts-file starts.json --suffix-digits 2   --min 6 --max 10 --count 2000000 | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode prince --dict words_demo.txt --count 1_000_000 | john --stdin --format=nt hashes/*
 ```
 
-**Useful flags**:  
-`--keymap qwerty|qwertz|azerty`, `--keymap-file graph.json`, `--walk-allow-shift`,  
-`--starts-file`, `--window`, `--relax-backtrack`, `--upper`, `--suffix-digits`
-
----
-
-### 3) `--mode both` (combine `pw` + `walk`)
+### File then crack
 ```bash
-# Split policy: half pw, half walk (total == count)
-python3 pwforge.py --mode both --both-policy split --count 1000000 | hashcat -a 0 -m 1000 hashes.ntlm
-
-# Each policy: generate full count for BOTH (2x total emitted)
-python3 pwforge.py --mode both --both-policy each --count 1000000 --out both.txt --no-stdout
+python3 pwforge.py --mode prince --dict words_demo.txt --count 1_000_000 --out prince.txt --no-stdout
+hashcat -a 0 -m 1000 hashes.ntlm prince.txt
 ```
 
-**Flag**: `--both-policy split|each`
-
----
-
-### 4) `--mode mask` (word + year + symbol)
-Lightweight patterning (good for corporate).
-
+### Parallel without GNU parallel
 ```bash
-python3 pwforge.py --mode mask   --dict words_demo.txt --years-file years_demo.txt --symbols-file symbols_demo.txt   --count 2000000 | hashcat -a 0 -m 1000 hashes.ntlm
-```
-
-**Flags**: `--mask-set`, `--dict`, `--years-file`, `--symbols-file`, `--upper-first`, `--emit-base`
-
----
-
-### 5) `--mode passphrase`
-```bash
-python3 pwforge.py --mode passphrase   --dict eff_demo.txt --words 4 --sep "-" --upper-first   --count 1000000 --out passphrases.txt --no-stdout
-```
-
-**Flags**: `--dict`, `--words`, `--sep`, `--upper-first`
-
----
-
-### 6) `--mode numeric`
-```bash
-python3 pwforge.py --mode numeric --min 6 --max 8 --count 1000000 | hashcat -a 0 -m 0 hashes.raw-md5
+printf "%s\n" pw walk markov pcfg | xargs -P4 -I{} sh -c 'python3 pwforge.py --mode "{}" --count 200000 --out "{}".txt --no-stdout'
 ```
 
 ---
 
-### 7) `--mode syllable`
-```bash
-python3 pwforge.py --mode syllable --template CVCVC --count 1000000 | hashcat -a 0 -m 1000 hashes.ntlm
-```
+## 🧪 Deterministic & Chunked Runs
 
-**Flags**: `--template`, `--upper-first`
+- `--seed N` gives identical output on any machine.
+- `--chunk N` controls internal batch size (default 100k). Increase for faster throughput on high‑RAM systems.
+
+```bash
+python3 pwforge.py --mode pw --seed 1337 --count 1_000_000 --out stable.txt --no-stdout
+python3 pwforge.py --mode pw --chunk 500_000 --count 5_000_000 --out pw.txt --no-stdout
+```
 
 ---
 
-### 8) `--mode prince` (composition of words)
-```bash
-python3 pwforge.py --mode prince --dict words_demo.txt   --bias-terms bias_terms_demo.txt --bias-factor 2.0   --prince-min 2 --prince-max 3 --sep ""   --prince-suffix-digits 2 --prince-symbol "!"   --count 2000000 | hashcat -a 0 -m 1000 hashes.ntlm
-```
+## 🛠️ How PWForge Works (Architecture & Flow)
 
-**Flags**: `--dict`, `--bias-terms`, `--bias-factor`, `--prince-min`, `--prince-max`, `--sep`, `--prince-suffix-digits`, `--prince-symbol`
+### 1) Argument parsing
+`pwforge.py` parses the CLI and builds a **target map** per mode. If `--mode both` and `--both-policy split`, the count is split between `pw` and `walk`. In `each`, both get the full count.
+
+### 2) Chunked generation loop
+Generation is performed in **batches** (`--chunk`, default 100k) per mode:
+- Each generator (`pw`, `walk`, `markov`, `pcfg`, `neural`, etc.) is called with `count=chunk`.
+- Candidates can be filtered (`--min-entropy`, `--no-dict`).
+- Output is written via `--out` (optionally `--gz`/`--split`) and/or streamed to STDOUT (if `--no-stdout` not set).
+- The loop repeats until the mode’s target count is met.
+
+### 3) True multi‑process sharding
+If `--mp-workers N` is set **with** `--out` and `--no-stdout`:
+- The parent process splits `--count` across workers.
+- It spawns **N child processes** with the same options plus `--mp-child`, each writing a **shard** (`*_wNN.txt[.gz]`).
+- The parent waits for all children and exits.
+
+> This design avoids file/pipe contention and scales across CPU cores.
+
+### 4) Neural generation internals
+- On `--mode neural`, PWForge lazily imports **torch**, loads your `--model` checkpoint into an internal character LSTM, and **samples** up to `--max-gen-len` characters per password.
+- Samples are then **length‑clamped** to `--min/--max` and passed through the same output/filters as other modes.
+
+### 5) Markov & PCFG
+- **Markov** builds a character n‑gram model (`--markov-order`) from `--markov-train`, then samples.
+- **PCFG** tokenizes the training corpus into patterns (words/digits/symbols), learns pattern frequencies, and samples patterns + lexicons to emit candidates.
 
 ---
 
-### 9) `--mode markov` (requires training)
+## 🧪 Fine‑Tuning a Neural Model (training)
+
+Use the provided `finetune_neural.py` script to create `model.pt` from any `.txt` or `.gz` corpus.
+
 ```bash
-python3 pwforge.py --mode markov --markov-train rockyou.txt --markov-order 3   --count 5000000 --out markov.txt.gz --gz --no-stdout
+# Train on rockyou.txt (or any leak/corpus you own and may use)
+python3 finetune_neural.py rockyou.txt --output finetuned_model.pt --epochs 10 --batch-size 512 --max-len 32
+
+# Verify a few samples after training
+python3 finetune_neural.py rockyou.txt --output finetuned_model.pt --epochs 2 --test
 ```
-**Flags**: `--markov-train`, `--markov-order` (1..5)
+
+Model hyperparameters (must match at generation time when you pass `--embed-dim`, `--hidden-dim`, etc.):
+- `--embed-dim 128`
+- `--hidden-dim 384`
+- `--num-layers 2`
+- `--dropout 0.3`
+- `--max-len 32` (training max length)
+
+The training script:
+- Splits data 95/5 train/val, creates a small **character vocabulary** (ASCII 33‑126), and trains an **LSTM** with cross‑entropy.
+- Saves the **best** checkpoint by validation loss to `--output`.
+- Optional `--test` step generates 10 samples using the trained model.
 
 ---
 
-### 10) `--mode pcfg` (requires training)
-```bash
-python3 pwforge.py --mode pcfg --pcfg-train rockyou.txt   --count 5000000 | hashcat -a 0 -m 1000 hashes.ntlm
-```
-**Flags**: `--pcfg-train`
-
----
-
-## 🧩 CLI Options (exhaustive)
+## 📚 Full CLI (by category)
 
 ### General
 ```
---mode {pw,walk,both,mask,passphrase,numeric,syllable,prince,markov,pcfg,mobile-walk}
+--mode {pw,walk,both,mask,passphrase,numeric,syllable,prince,markov,pcfg,mobile-walk,hybrid,combo,neural}
 --count N
 --min N
 --max N
 --seed N
---resume PATH              (reserved)
 --charset STR              (pw)
 --exclude-ambiguous
 --require "upper,lower,digit,symbol"
@@ -218,41 +270,52 @@ python3 pwforge.py --mode pcfg --pcfg-train rockyou.txt   --count 5000000 | hash
 --window N                 (default 2)
 --relax-backtrack
 --upper
---leet-profile {off,minimal,common,aggressive}
 --suffix-digits N
 --keymap {qwerty,qwertz,azerty}
 --keymap-file PATH
 --walk-allow-shift
 --both-policy {split,each}
---interleave               (present in CLI; no-op in generator)
 ```
 
 ### Mask / Passphrase / Prince
 ```
---mask-set {common,corp,ni}
 --dict PATH
 --years-file PATH
 --symbols-file PATH
---emit-base
 --bias-terms PATH
 --bias-factor FLOAT        (default 2.0)
 --words N                  (passphrase)
 --sep STR
 --upper-first
 --template STR             (syllable)
---add-terms PATH           (present in CLI; no-op in generator)
 --prince-min N             (default 2)
 --prince-max N             (default 3)
 --prince-suffix-digits N
 --prince-symbol STR
 ```
 
-### Uniqueness (reserved / not active)
+### Hybrid / Combo
 ```
---unique
---unique-global
---bloom MB
---dedupe-file PATH
+--rules PATH               (hybrid)
+--mask STR                 (hybrid)
+--combo "mode:w,mode:w"    (combo)
+```
+
+### Neural
+```
+--model PATH               (required)
+--batch-size N             (default 512)
+--max-gen-len N            (default 32)
+--embed-dim N              (default 128)
+--hidden-dim N             (default 384)
+--num-layers N             (default 2)
+--dropout FLOAT            (default 0.3)
+```
+
+### Filtering
+```
+--min-entropy FLOAT        (default 0.0)
+--no-dict PATH             (drop candidates present in file)
 ```
 
 ### Output & Performance
@@ -265,9 +328,8 @@ python3 pwforge.py --mode pcfg --pcfg-train rockyou.txt   --count 5000000 | hash
 --dry-run N
 --meter N                  (default 100000; 0 disables)
 --estimate-only
---workers N                (single-process chunking)
---mp-workers N             (spawn N child processes; requires --out and --no-stdout)
---chunk N                  (batch size per inner loop; default 100000)
+--chunk N                  (default 100000)
+--mp-workers N             (requires --out and --no-stdout)
 ```
 
 ### Models
@@ -277,52 +339,13 @@ python3 pwforge.py --mode pcfg --pcfg-train rockyou.txt   --count 5000000 | hash
 --pcfg-train PATH
 ```
 
-### Cracker passthroughs (accepted, not used by generator)
-```
---jtr-fork N
---jtr-format STR
---jtr-hashes PATH
---hc-attack N
---hc-mode N
---hc-hashes PATH
---hc-rules PATH
-```
-
----
-
-## 🧪 Deterministic & Chunked Runs
-
-```bash
-# Deterministic
-python3 pwforge.py --mode pw --seed 1337 --count 1000000 --out stable.txt --no-stdout
-
-# Larger chunks (better throughput on big RAM boxes)
-python3 pwforge.py --mode pw --chunk 500000 --count 5000000 --out pw.txt --no-stdout
-```
-
----
-
-## 🧵 Parallel Without GNU parallel (pure Bash)
-
-```bash
-# Four modes in parallel
-printf "%s\n" pw walk markov pcfg | xargs -P4 -I{} sh -c 'python3 pwforge.py --mode "{}" --count 200000 --out "{}".txt --no-stdout'
-
-# Shard one mode and merge
-for i in 0 1 2 3; do
-  python3 pwforge.py --mode pw --count 1000000 --out "pw_$i.txt" --no-stdout &
-done
-wait
-cat pw_*.txt > pw_all.txt
-```
-
 ---
 
 ## 🧠 Tips
 
-- For **WSL**, prefer generating into Linux FS (e.g., `/home`, `/dev/shm`) instead of `/mnt/c`.
-- `--mp-workers` is the preferred scaling method when writing to files (each shard writes independently).
-- For **JtR multi‑core**, do not pipe — **write a file** and run with `--fork`.
+- Prefer `/home` or `/dev/shm` over `/mnt/c` on WSL for high throughput.
+- Use `--mp-workers` for real speed‑up with file output (each shard writes independently).
+- For John multi‑core, write a file and use `--fork` instead of piping.
 
 ---
 
