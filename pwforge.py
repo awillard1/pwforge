@@ -467,6 +467,7 @@ def main():
                     help="Leet substitution probability profile")
     ap.add_argument("--suffix-digits", type=int, default=0, help="Append up to N random digits to walks")
     ap.add_argument("--keymap", choices=["qwerty","qwertz","azerty"], default="qwerty", help="Keyboard layout for walks")
+    ap.add_argument("--keymap-file", type=str, help="Path to JSON adjacency graph for custom keyboard walks")
     ap.add_argument("--walk-allow-shift", action="store_true", help="Include symbol row adjacency")
 
     # Both-mode control (pw + walk)
@@ -549,6 +550,18 @@ def main():
     else:
         weighted_starts = DEFAULT_STARTS
     graph = get_graph(args.keymap, args.walk_allow_shift)
+    # Optional custom keymap JSON overrides built-ins
+    if args.keymap_file:
+        try:
+            with open(args.keymap_file, "r", encoding="utf-8") as fh:
+                custom = json.load(fh)
+            # Normalize keys to lower-case
+            graph = {str(k).lower(): [str(vv).lower() for vv in v] for k,v in custom.items()}
+            if args.walk_allow_shift:
+                graph = {**graph, **GRAPH_SYMBOL}
+        except Exception as e:
+            print(f"[!] Failed to load --keymap-file: {e}", file=sys.stderr)
+
     leet_prob = 0.0 if args.leet_profile == "off" else LEET_PROFILES[args.leet_profile]
 
     # Mask/passphrase demos

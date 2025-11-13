@@ -128,7 +128,7 @@ This toolkit emits password candidates directly to **stdout** (for piping into H
 - **numeric**: dates & PIN shapes
 - **syllable**: pronounceable C/V templates
 
-Also includes: uniqueness controls (set/Bloom), dedupe against existing lists, deterministic runs (`--seed`), resume, file output/split/gzip, stats meter, and a **JtR helper**.
+Also includes: uniqueness controls (set/Bloom), dedupe against existing lists, deterministic runs (`--seed`), resume, file output/split/gzip, stats meter, and a **JtR Note**.
 
 ---
 
@@ -228,7 +228,7 @@ Generates common patterns: `YYYY`, `MMDD`, `DDMM`, `YYMMDD`, `####`, `######`.
 - `--upper` — capitalize first letter
 - `--suffix-digits N` — append up to N digits
 
-### JtR Helper
+### JtR Note
 If you need John the Ripper with `--fork`, stdin cannot be shared. Use:
 ```
 python3 pwforge.py --mode both --count 200000 --out list.txt
@@ -431,3 +431,26 @@ Split generation into N chunks (lightweight, memory-safe). Combine with `--split
 ```bash
 python3 pwforge.py --mode both --count 1000000 --workers 8 --out both.txt --gz --split 8 --no-stdout
 ```
+
+
+---
+
+## 🎹 Custom Keyboard Keymaps
+
+You can supply your own keyboard adjacency graph via JSON to control walk behavior:
+
+**Example JSON (`keymap_de.json`):**
+```json
+{
+  "q": ["w", "a", "y"],
+  "w": ["q", "e", "s"],
+  "e": ["w", "r", "d"]
+}
+```
+
+**Use it:**
+```bash
+python3 pwforge.py --mode walk --keymap-file keymap_qwertz.json       --min 6 --max 10 --count 100000 --out walks_de.txt
+```
+
+If you also want symbol-row adjacency (e.g., `!@#$...+`), add `--walk-allow-shift`.
