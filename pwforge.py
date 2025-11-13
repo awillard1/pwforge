@@ -878,7 +878,6 @@ def main():
         # proceed to file writing
         # (fall-through)
     else:
-
     for mode, tgt in targets.items():
         if tgt <= 0: continue
         while tgt > 0:
