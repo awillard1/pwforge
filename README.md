@@ -26,14 +26,10 @@ It unifies multiple generation techniques — **Markov, PCFG, Mask, Keyboard Wal
 
 ## 🚀 Quick Start
 
-### Clone the Repository
 ```bash
 git clone https://github.com/awillard1/pwforge.git
 cd pwforge
-```
 
-### Run Examples
-```bash
 # Random password list
 python3 pwforge.py --mode pw --min 8 --max 16 --count 500000 --out pwlist.txt.gz --gz
 
@@ -45,9 +41,6 @@ python3 pwforge.py --mode markov --markov-train words_demo.txt --markov-order 3 
 
 # PCFG mode
 python3 pwforge.py --mode pcfg --pcfg-train words_demo.txt --count 100000 --out pcfg.txt
-
-# Estimate keyspace only
-python3 pwforge.py --mode pw --min 10 --max 16 --estimate-only
 ```
 
 ---
@@ -78,19 +71,67 @@ python3 pwforge.py --help
 
 ---
 
-## 🧰 Integrations
+## ⚙️ Using PWForge with Hashcat
 
-**Hashcat:**
+PWForge integrates directly with **Hashcat** for dynamic password cracking workflows.
+You can stream wordlists to Hashcat in real time (stdin) or pre-generate structured lists for large jobs.
+
+### 1) Direct streaming to Hashcat
 ```bash
-python3 pwforge.py --mode both --count 1000000 | hashcat -a 0 -m 1000 hashes.txt
+# Randoms into NTLM
+python3 pwforge.py --mode pw --count 500000 | hashcat -a 0 -m 1000 hashes.txt
+
+# Keyboard walks
+python3 pwforge.py --mode walk --min 6 --max 10 --count 250000 | hashcat -a 0 -m 1800 hashes.txt
 ```
 
-**John the Ripper:**
+### 2) File-based runs (recommended for long jobs)
 ```bash
-python3 pwforge.py --mode pw --count 500000 | john --stdin --format=nt hashes/*
+python3 pwforge.py --mode both --count 1000000 --out candidates.txt --no-stdout
+hashcat -a 0 -m 1000 hashes.txt candidates.txt
+# or compressed
+python3 pwforge.py --mode pw --count 5000000 --gz --out pwlist.txt --no-stdout
+hashcat -a 0 -m 1000 hashes.txt pwlist.txt.gz
 ```
 
-> **Note:** John’s `--fork` cannot be used when reading from `stdin`. Use `--split` to create multiple files for each fork.
+### 3) Split lists for multi-GPU/multi-node cracking
+```bash
+python3 pwforge.py --mode pw --count 20000000 --split 8 --gz --out pwlist.txt --no-stdout
+# -> pwlist_00.txt.gz ... pwlist_07.txt.gz
+```
+
+### 4) Multi-process generation (true parallel)
+```bash
+python3 pwforge.py --mode walk --count 10000000 --mp-workers 8 --chunk 250000 --out walklist.txt --gz --no-stdout
+# -> walklist_w00.txt.gz ... walklist_w07.txt.gz
+```
+
+### 5) With Hashcat rules (base candidates → mutations)
+```bash
+python3 pwforge.py --mode mask --dict words_demo.txt --years-file years_demo.txt   --symbols-file symbols_demo.txt --emit-base --count 100000 | hashcat -a 0 -m 0 hashes.txt --rules-file /opt/hashcat/rules/best64.rule
+```
+
+### 6) Hybrid attacks
+```bash
+# Append digits (left hybrid)
+python3 pwforge.py --mode pw --count 1000000 | hashcat -a 6 -m 1000 hashes.txt ?d?d?d
+
+# Prepend years (right hybrid)
+python3 pwforge.py --mode pw --count 1000000 | hashcat -a 7 -m 1000 hashes.txt 20?d?d
+```
+
+### 7) Markov/PCFG streamed samples
+```bash
+python3 pwforge.py --mode markov --markov-train words_demo.txt --count 500000 | hashcat -a 0 -m 1000 hashes.txt
+python3 pwforge.py --mode pcfg   --pcfg-train   words_demo.txt --count 500000 | hashcat -a 0 -m 0    hashes.txt
+```
+
+### 8) Resume & determinism
+```bash
+python3 pwforge.py --mode pw --count 1000000 --seed 1337 --out stable.txt --no-stdout
+# later
+hashcat -a 0 -m 1000 hashes.txt stable.txt --restore
+```
 
 ---
 
@@ -99,6 +140,7 @@ python3 pwforge.py --mode pw --count 500000 | john --stdin --format=nt hashes/*
 ### Global
 - `--mode pw|walk|both|mask|passphrase|numeric|syllable|prince|markov|pcfg|mobile-walk`
 - `--count N` — number of lines (**for `both` see policy**)
+- `--min, --max` — length range (where applicable)
 - `--seed N` — deterministic output (reproducible)
 - `--resume session.json` — save/load RNG state, produced count
 - `--dry-run N` — preview N candidates per active mode and exit
@@ -113,29 +155,10 @@ python3 pwforge.py --mode pw --count 500000 | john --stdin --format=nt hashes/*
 - `--gz` — gzip output file(s)
 - `--no-stdout` — suppress stdout (useful with `--out`)
 
----
-
-## 🧮 Multi-Process Workers (True Parallel Mode)
-
-PWForge now supports **true multi-process sharding** via `--mp-workers`.
-Each worker spawns a child process that writes its own shard (`_w00`, `_w01`, etc.).
-
-```bash
-python3 pwforge.py --mode pw --count 10000000 --mp-workers 8 --out pwlist.txt --gz --no-stdout
-```
-
-This command launches **8 subprocesses**, each producing 1/8th of the total count.
-
-Combine it with `--chunk` to control per-batch size and memory footprint:
-
-```bash
-python3 pwforge.py --mode walk --count 5000000 --mp-workers 4 --chunk 250000 --out walks.txt --gz --no-stdout
-```
-
-> **Notes**
-> - Requires both `--out` and `--no-stdout`.
-> - Worker files are named like `pwlist_w00.txt.gz`, `pwlist_w01.txt.gz`, etc.
-> - Provides near-linear CPU scaling on multi-core systems.
+### Markov/PCFG
+- `--markov-train path` — corpus for Markov training
+- `--markov-order N` — Markov order (default 3; 1..5 recommended)
+- `--pcfg-train path` — corpus for PCFG training
 
 ---
 
@@ -144,8 +167,3 @@ python3 pwforge.py --mode walk --count 5000000 --mp-workers 4 --chunk 250000 --o
 MIT License © 2025  
 Created by Adam Willard & Contributors  
 For educational and professional security research only.
-
----
-
-### 🔑 Keywords
-`password generator` · `hashcat` · `john the ripper` · `markov` · `pcfg` · `mask` · `passphrase` · `keyboard walk` · `pentest` · `wordlist` · `security research`
