@@ -30,7 +30,7 @@ It unifies multiple generation techniques — **Markov, PCFG, Mask, Keyboard Wal
 
 ### Clone the Repository
 ```bash
-git clone https://github.com/<youruser>/pwforge.git
+git clone https://github.com/awillard1/pwforge.git
 cd pwforge
 ```
 
@@ -74,11 +74,6 @@ python3 pwforge.py --mode pw --min 10 --max 16 --estimate-only
 
 Python 3.8+ required.
 
-```bash
-pip install -r requirements.txt   # optional, if you add extra deps later
-```
-
-or just run directly:
 ```bash
 python3 pwforge.py --help
 ```
