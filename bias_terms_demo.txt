@@ -1,0 +1,11 @@
+company 5
+project 3
+okta 4
+azure 4
+sharepoint 3
+vpn 3
+oracle 2
+ebs 2
+tableau 2
+jenkins 2
+aws 4
