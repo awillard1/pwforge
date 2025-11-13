@@ -36,23 +36,23 @@ python3 pwforge.py --help
 ### Stream directly to Hashcat (no disk I/O)
 ```bash
 # Random passwords
-python3 pwforge.py --mode pw --count 1_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode pw --count 1000000 | hashcat -a 0 -m 1000 hashes.ntlm
 
 # Markov (requires training corpus)
-python3 pwforge.py --mode markov --markov-train rockyou.txt --count 2_000_000 | hashcat -a 0 -m 0 hashes.raw-md5
+python3 pwforge.py --mode markov --markov-train rockyou.txt --count 2000000 | hashcat -a 0 -m 0 hashes.raw-md5
 
 # PCFG (requires training corpus)
-python3 pwforge.py --mode pcfg --pcfg-train rockyou.txt --count 1_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode pcfg --pcfg-train rockyou.txt --count 1000000 | hashcat -a 0 -m 1000 hashes.ntlm
 ```
 
 ### Stream directly to John the Ripper (stdin)
 ```bash
-python3 pwforge.py --mode pw --count 1_000_000 | john --stdin --format=nt hashes/*
+python3 pwforge.py --mode pw --count 1000000 | john --stdin --format=nt hashes/*
 ```
 > **Note:** John’s `--fork` does **not** work with stdin. For multi‑core JtR, write a file and use `--wordlist`:
 
 ```bash
-python3 pwforge.py --mode walk --count 2_000_000 --out walks.txt --no-stdout
+python3 pwforge.py --mode walk --count 2000000 --out walks.txt --no-stdout
 john --wordlist=walks.txt --format=nt --fork=16 hashes/*
 ```
 
@@ -62,20 +62,20 @@ john --wordlist=walks.txt --format=nt --fork=16 hashes/*
 
 ```bash
 # Plain file
-python3 pwforge.py --mode pw --count 5_000_000 --out pw.txt --no-stdout
+python3 pwforge.py --mode pw --count 5000000 --out pw.txt --no-stdout
 
 # Gzip file (recommended for huge runs)
-python3 pwforge.py --mode walk --count 5_000_000 --out walks.txt.gz --gz --no-stdout
+python3 pwforge.py --mode walk --count 5000000 --out walks.txt.gz --gz --no-stdout
 
 # Split into 8 parts (mutually exclusive with --mp-workers)
-python3 pwforge.py --mode pw --count 80_000_000 --split 8 --out pw.txt --gz --no-stdout
+python3 pwforge.py --mode pw --count 80000000 --split 8 --out pw.txt --gz --no-stdout
 # => pw_00000000.txt.gz ... pw_00000007.txt.gz
 ```
 
 ### Fast paths on WSL/Linux
 Avoid `/mnt/c/...` for heavy I/O; prefer Linux FS or tmpfs:
 ```bash
-python3 pwforge.py --mode pw --count 10_000_000 --out /dev/shm/pw.txt --no-stdout
+python3 pwforge.py --mode pw --count 10000000 --out /dev/shm/pw.txt --no-stdout
 ```
 
 ---
@@ -87,7 +87,7 @@ python3 pwforge.py --mode pw --count 10_000_000 --out /dev/shm/pw.txt --no-stdou
 
 ```bash
 # 8 parallel subprocesses; gzip output; deterministic seed
-python3 pwforge.py --mode markov   --markov-train rockyou.txt   --count 80_000_000   --mp-workers 8   --out markov.txt.gz --gz --no-stdout --seed 42
+python3 pwforge.py --mode markov   --markov-train rockyou.txt   --count 80000000   --mp-workers 8   --out markov.txt.gz --gz --no-stdout --seed 42
 # => markov_w00.txt.gz ... markov_w07.txt.gz
 ```
 
@@ -102,7 +102,7 @@ General purpose random with class policy and custom charset.
 
 ```bash
 # 1M random passwords 8..16 chars; require upper/lower/digit/symbol
-python3 pwforge.py --mode pw --min 8 --max 16 --count 1_000_000   --require upper,lower,digit,symbol | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode pw --min 8 --max 16 --count 1000000   --require upper,lower,digit,symbol | hashcat -a 0 -m 1000 hashes.ntlm
 ```
 
 **Useful flags**: `--charset`, `--exclude-ambiguous`, `--require`, `--seed`
@@ -114,7 +114,7 @@ QWERTY/QWERTZ/AZERTY adjacency walks; optional custom graph and starts list.
 
 ```bash
 # QWERTZ with custom starts and suffix digits appended
-python3 pwforge.py --mode walk --keymap qwertz   --starts-file starts.json --suffix-digits 2   --min 6 --max 10 --count 2_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode walk --keymap qwertz   --starts-file starts.json --suffix-digits 2   --min 6 --max 10 --count 2000000 | hashcat -a 0 -m 1000 hashes.ntlm
 ```
 
 **Useful flags**:  
@@ -126,10 +126,10 @@ python3 pwforge.py --mode walk --keymap qwertz   --starts-file starts.json --suf
 ### 3) `--mode both` (combine `pw` + `walk`)
 ```bash
 # Split policy: half pw, half walk (total == count)
-python3 pwforge.py --mode both --both-policy split --count 1_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode both --both-policy split --count 1000000 | hashcat -a 0 -m 1000 hashes.ntlm
 
 # Each policy: generate full count for BOTH (2x total emitted)
-python3 pwforge.py --mode both --both-policy each --count 1_000_000 --out both.txt --no-stdout
+python3 pwforge.py --mode both --both-policy each --count 1000000 --out both.txt --no-stdout
 ```
 
 **Flag**: `--both-policy split|each`
@@ -140,7 +140,7 @@ python3 pwforge.py --mode both --both-policy each --count 1_000_000 --out both.t
 Lightweight patterning (good for corporate).
 
 ```bash
-python3 pwforge.py --mode mask   --dict words_demo.txt --years-file years_demo.txt --symbols-file symbols_demo.txt   --count 2_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode mask   --dict words_demo.txt --years-file years_demo.txt --symbols-file symbols_demo.txt   --count 2000000 | hashcat -a 0 -m 1000 hashes.ntlm
 ```
 
 **Flags**: `--mask-set`, `--dict`, `--years-file`, `--symbols-file`, `--upper-first`, `--emit-base`
@@ -149,7 +149,7 @@ python3 pwforge.py --mode mask   --dict words_demo.txt --years-file years_demo.t
 
 ### 5) `--mode passphrase`
 ```bash
-python3 pwforge.py --mode passphrase   --dict eff_demo.txt --words 4 --sep "-" --upper-first   --count 1_000_000 --out passphrases.txt --no-stdout
+python3 pwforge.py --mode passphrase   --dict eff_demo.txt --words 4 --sep "-" --upper-first   --count 1000000 --out passphrases.txt --no-stdout
 ```
 
 **Flags**: `--dict`, `--words`, `--sep`, `--upper-first`
@@ -158,14 +158,14 @@ python3 pwforge.py --mode passphrase   --dict eff_demo.txt --words 4 --sep "-" -
 
 ### 6) `--mode numeric`
 ```bash
-python3 pwforge.py --mode numeric --min 6 --max 8 --count 1_000_000 | hashcat -a 0 -m 0 hashes.raw-md5
+python3 pwforge.py --mode numeric --min 6 --max 8 --count 1000000 | hashcat -a 0 -m 0 hashes.raw-md5
 ```
 
 ---
 
 ### 7) `--mode syllable`
 ```bash
-python3 pwforge.py --mode syllable --template CVCVC --count 1_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode syllable --template CVCVC --count 1000000 | hashcat -a 0 -m 1000 hashes.ntlm
 ```
 
 **Flags**: `--template`, `--upper-first`
@@ -174,7 +174,7 @@ python3 pwforge.py --mode syllable --template CVCVC --count 1_000_000 | hashcat 
 
 ### 8) `--mode prince` (composition of words)
 ```bash
-python3 pwforge.py --mode prince --dict words_demo.txt   --bias-terms bias_terms_demo.txt --bias-factor 2.0   --prince-min 2 --prince-max 3 --sep ""   --prince-suffix-digits 2 --prince-symbol "!"   --count 2_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode prince --dict words_demo.txt   --bias-terms bias_terms_demo.txt --bias-factor 2.0   --prince-min 2 --prince-max 3 --sep ""   --prince-suffix-digits 2 --prince-symbol "!"   --count 2000000 | hashcat -a 0 -m 1000 hashes.ntlm
 ```
 
 **Flags**: `--dict`, `--bias-terms`, `--bias-factor`, `--prince-min`, `--prince-max`, `--sep`, `--prince-suffix-digits`, `--prince-symbol`
@@ -183,7 +183,7 @@ python3 pwforge.py --mode prince --dict words_demo.txt   --bias-terms bias_terms
 
 ### 9) `--mode markov` (requires training)
 ```bash
-python3 pwforge.py --mode markov --markov-train rockyou.txt --markov-order 3   --count 5_000_000 --out markov.txt.gz --gz --no-stdout
+python3 pwforge.py --mode markov --markov-train rockyou.txt --markov-order 3   --count 5000000 --out markov.txt.gz --gz --no-stdout
 ```
 **Flags**: `--markov-train`, `--markov-order` (1..5)
 
@@ -191,7 +191,7 @@ python3 pwforge.py --mode markov --markov-train rockyou.txt --markov-order 3   -
 
 ### 10) `--mode pcfg` (requires training)
 ```bash
-python3 pwforge.py --mode pcfg --pcfg-train rockyou.txt   --count 5_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode pcfg --pcfg-train rockyou.txt   --count 5000000 | hashcat -a 0 -m 1000 hashes.ntlm
 ```
 **Flags**: `--pcfg-train`
 
@@ -294,10 +294,10 @@ python3 pwforge.py --mode pcfg --pcfg-train rockyou.txt   --count 5_000_000 | ha
 
 ```bash
 # Deterministic
-python3 pwforge.py --mode pw --seed 1337 --count 1_000_000 --out stable.txt --no-stdout
+python3 pwforge.py --mode pw --seed 1337 --count 1000000 --out stable.txt --no-stdout
 
 # Larger chunks (better throughput on big RAM boxes)
-python3 pwforge.py --mode pw --chunk 500_000 --count 5_000_000 --out pw.txt --no-stdout
+python3 pwforge.py --mode pw --chunk 500000 --count 5000000 --out pw.txt --no-stdout
 ```
 
 ---
@@ -310,7 +310,7 @@ printf "%s\n" pw walk markov pcfg | xargs -P4 -I{} sh -c 'python3 pwforge.py --m
 
 # Shard one mode and merge
 for i in 0 1 2 3; do
-  python3 pwforge.py --mode pw --count 1_000_000 --out "pw_$i.txt" --no-stdout &
+  python3 pwforge.py --mode pw --count 1000000 --out "pw_$i.txt" --no-stdout &
 done
 wait
 cat pw_*.txt > pw_all.txt
