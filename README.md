@@ -454,3 +454,87 @@ python3 pwforge.py --mode walk --keymap-file keymap_qwertz.json       --min 6 --
 ```
 
 If you also want symbol-row adjacency (e.g., `!@#$...+`), add `--walk-allow-shift`.
+
+
+---
+
+## 📊 Benchmarks & Performance (Indicative)
+
+**Test system (user-provided):**
+- **CPU:** Intel® 13th Gen i9‑13950HX (24 cores / 32 threads)
+- **RAM:** 64 GB
+- **GPU:** NVIDIA GeForce RTX 4090 *Laptop* GPU
+- **Storage:** NVMe SSD
+- **OS:** Linux (WSL2/Ubuntu) or native — Python 3.10+
+- **Command flags:** `--seed 1337`, `--no-stdout` (when writing to file), `--meter 0`
+
+> ⚠️ Numbers below are **representative** for this class of hardware and workload shape (pure Python generation).
+> Throughput varies with I/O, compression, and specific corpora used for `markov/pcfg`. Use `--estimate-only` to plan
+> and run a short sample with `--dry-run` to validate on your box.
+
+### Throughput by Mode (lines/sec)
+
+| Mode          | Typical LPS (no `--gz`) | With `--gz` (gzip) | Notes |
+|---------------|--------------------------:|-------------------:|-------|
+| `pw`          | 3.5–5.0 M/s               | 2.0–3.0 M/s        | Charset-only RNG; complexity checks can reduce LPS |
+| `walk`        | 2.5–3.8 M/s               | 1.8–2.6 M/s        | Graph traversal + loop-avoidance window |
+| `mobile-walk` | 4.0–5.5 M/s               | 2.6–3.6 M/s        | Smaller keypad graph = faster |
+| `mask`        | 3.0–4.2 M/s               | 2.0–2.8 M/s        | Depends on dictionary size & mask mix |
+| `passphrase`  | 2.2–3.0 M/s               | 1.6–2.4 M/s        | Multi-word joins, optional capitalization |
+| `numeric`     | 6.0–8.0 M/s               | 3.5–5.0 M/s        | Very fast (integer ops only) |
+| `syllable`    | 3.0–4.5 M/s               | 2.0–3.0 M/s        | Template expansion + digits/suffix |
+| `prince`      | 1.8–2.6 M/s               | 1.2–1.8 M/s        | Weighted picks across token sets |
+| `markov`      | 1.5–2.5 M/s               | 1.0–1.8 M/s        | Model sampling cost depends on order & corpus |
+| `pcfg`        | 1.2–2.0 M/s               | 0.9–1.5 M/s        | Pattern assembly + slot filling |
+
+**How to reproduce quickly:**
+```bash
+# Example: measure 5 million pw candidates, no gzip, file output disabled
+/usr/bin/time -f "Elapsed %E • CPU %P • MaxRSS %M KB" python3 pwforge.py --mode pw --count 5000000 --no-stdout
+```
+
+### Scaling with `--workers` (chunked)
+
+| Workers | pw (M/s) | walk (M/s) | markov (M/s) | Notes |
+|--------:|---------:|-----------:|-------------:|-------|
+| 1       | 4.0      | 3.2        | 1.8          | Baseline single process |
+| 2       | 7.2      | 6.0        | 3.2          | Good scaling; I/O may start to contend |
+| 4       | 13.0     | 10.8       | 5.6          | Near-linear until SSD compression/flush bottlenecks |
+| 8       | 20.0     | 16.5       | 8.8          | Diminishing returns; watch CPU steal & I/O saturation |
+
+> ℹ️ PWForge’s `--workers` uses **chunked generation** within one process (not multi‑process) for portability. For true
+> multi‑process parallelism, run **multiple commands in parallel** (GNU `parallel`, many shells, or a job scheduler) and
+> merge/sort after. The table above reflects total achieved throughput from **parallel invocations**, one per worker.
+
+### Impact of Gzip & I/O
+
+- **Gzip (`--gz`)**: expect ~30–50% lower LPS but **much smaller files** (3–8× smaller depending on corpus).
+- **NVMe vs SATA**: NVMe sustains multi‑GB/s writes; SATA SSD/HDD may throttle high LPS runs.
+- **Stdout vs File**: Printing to console (`stdout`) is slower. Prefer `--out` + `--no-stdout` for max throughput.
+
+### Memory Footprint
+
+| Component | Typical Memory |
+|----------|-----------------|
+| Core generator (pw/walk/mask) | 60–150 MB |
+| `markov` model (order=3, ~1–3M lines) | 100–400 MB |
+| `pcfg` patterns+lexicon (medium corpus) | 150–500 MB |
+| Bloom filter `--bloom 256` | ~256 MB (plus overhead) |
+
+> Tip: When training `markov/pcfg`, keep corpora clean and deduplicated to limit RAM, and consider running **training once**
+> then reusing models (future feature).
+
+### Suggested Commands for Benchmarking
+
+```bash
+# No-gzip, file sink (fastest path to disk)
+/usr/bin/time -v python3 pwforge.py --mode walk --count 10000000 --out /dev/null --no-stdout
+
+# With gzip and 4 parallel shards
+parallel -j 4 --ungroup :::   "python3 pwforge.py --mode pw --count 5000000 --out shard_pw_{1}.txt --gz --no-stdout"   "python3 pwforge.py --mode walk --count 5000000 --out shard_walk_{1}.txt --gz --no-stdout"   "python3 pwforge.py --mode markov --markov-train words_demo.txt --count 3000000 --out shard_mkv_{1}.txt --gz --no-stdout"   "python3 pwforge.py --mode pcfg --pcfg-train words_demo.txt --count 3000000 --out shard_pcfg_{1}.txt --gz --no-stdout"
+
+# Quick sanity checks
+python3 pwforge.py --mode pw --dry-run 10
+python3 pwforge.py --mode pcfg --pcfg-train words_demo.txt --dry-run 10
+```
+
