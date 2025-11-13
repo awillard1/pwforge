@@ -42,7 +42,7 @@ Examples:
   python3 gen_combo.py --mode mask --dict words_demo.txt --hc-attack 0 --hc-mode 1000 --hc-hashes "hashes.txt" --hc-rules rules/best64.rule --out base.txt
 """
 
-import argparse, json, string, sys, time, os, gzip, math, pickle, random
+import argparse, json, string, sys, time, os, gzip, math, pickle, random, re
 from collections import deque
 
 # ---------------------------
@@ -878,23 +878,23 @@ def main():
         # proceed to file writing
         # (fall-through)
     else:
-    for mode, tgt in targets.items():
-        if tgt <= 0: continue
-        while tgt > 0:
-            if mode == "pw": s = emit_pw()
-            elif mode == "walk": s = emit_walk()
-            elif mode == "mask": s = emit_mask()
-            elif mode == "passphrase": s = emit_passphrase()
-            elif mode == "numeric": s = emit_numeric()
-            elif mode == "syllable": s = emit_syllable()
-            elif mode == "prince": s = emit_prince()
-            elif mode == "markov": s = emit_markov()
-            elif mode == "pcfg": s = emit_pcfg()
-            elif mode == "mobile-walk": s = emit_mobile()
-            else: break
-            if s is None: break
-            emit_and_store(s)
-            tgt -= 1; produced += 1; meter()
+        for mode, tgt in targets.items():
+            if tgt <= 0: continue
+            while tgt > 0:
+                if mode == "pw": s = emit_pw()
+                elif mode == "walk": s = emit_walk()
+                elif mode == "mask": s = emit_mask()
+                elif mode == "passphrase": s = emit_passphrase()
+                elif mode == "numeric": s = emit_numeric()
+                elif mode == "syllable": s = emit_syllable()
+                elif mode == "prince": s = emit_prince()
+                elif mode == "markov": s = emit_markov()
+                elif mode == "pcfg": s = emit_pcfg()
+                elif mode == "mobile-walk": s = emit_mobile()
+                else: break
+                if s is None: break
+                emit_and_store(s)
+                tgt -= 1; produced += 1; meter()
 
     # Save resume state
     if args.resume:
