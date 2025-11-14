@@ -36,22 +36,22 @@ python3 -c "import torch, platform; print('torch', torch.__version__,'cuda', tor
 ### Stream directly to Hashcat (no disk I/O)
 ```bash
 # Random passwords
-python3 pwforge.py --mode pw --count 1_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode pw --count 1000000 | hashcat -a 0 -m 1000 hashes.ntlm
 
 # Markov (requires training corpus)
-python3 pwforge.py --mode markov --markov-train rockyou.txt --count 2_000_000 | hashcat -a 0 -m 0 hashes.md5
+python3 pwforge.py --mode markov --markov-train rockyou.txt --count 2000000 | hashcat -a 0 -m 0 hashes.md5
 
 # PCFG (requires training corpus)
-python3 pwforge.py --mode pcfg --pcfg-train rockyou.txt --count 1_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode pcfg --pcfg-train rockyou.txt --count 1000000 | hashcat -a 0 -m 1000 hashes.ntlm
 ```
 
 ### Stream to John the Ripper (stdin)
 ```bash
-python3 pwforge.py --mode pw --count 1_000_000 | john --stdin --format=nt hashes/*
+python3 pwforge.py --mode pw --count 1000000 | john --stdin --format=nt hashes/*
 ```
 > John’s `--fork` does **not** work with stdin. For multi‑core JtR use a file:
 ```bash
-python3 pwforge.py --mode walk --count 2_000_000 --out walks.txt --no-stdout
+python3 pwforge.py --mode walk --count 2000000 --out walks.txt --no-stdout
 john --wordlist=walks.txt --format=nt --fork=16 hashes/*
 ```
 
@@ -63,7 +63,7 @@ Neural generation uses a character‑level LSTM checkpoint (`.pt`) and samples c
 
 ```bash
 # 2M neural candidates to hashcat
-python3 pwforge.py --mode neural --model finetuned_model.pt   --batch-size 512 --max-gen-len 32   --min 8 --max 20 --count 2_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode neural --model finetuned_model.pt   --batch-size 512 --max-gen-len 32   --min 8 --max 20 --count 2000000 | hashcat -a 0 -m 1000 hashes.ntlm
 ```
 
 - PWForge auto‑selects **CUDA** if available, else CPU.
@@ -71,7 +71,7 @@ python3 pwforge.py --mode neural --model finetuned_model.pt   --batch-size 512 -
 
 **File output with true multi‑process sharding**
 ```bash
-python3 pwforge.py --mode neural --model finetuned_model.pt   --count 20_000_000 --mp-workers 8   --out neural.txt.gz --gz --no-stdout
+python3 pwforge.py --mode neural --model finetuned_model.pt   --count 20000000 --mp-workers 8   --out neural.txt.gz --gz --no-stdout
 # => neural_w00.txt.gz ... neural_w07.txt.gz
 ```
 
@@ -82,14 +82,14 @@ python3 pwforge.py --mode neural --model finetuned_model.pt   --count 20_000_000
 ### Hybrid (`--mode hybrid`)
 Apply a subset of **Hashcat‑style rules** to a dictionary, optionally combining with a light mask.
 ```bash
-python3 pwforge.py --mode hybrid   --dict words_demo.txt --rules rules.txt   --mask "?d?d"   --count 2_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode hybrid   --dict words_demo.txt --rules rules.txt   --mask "?d?d"   --count 2000000 | hashcat -a 0 -m 1000 hashes.ntlm
 ```
 
 ### Combo (`--mode combo`)
 Weighted mixture of multiple generators in one stream.
 ```bash
 # 60% walk, 30% prince, 10% pcfg
-python3 pwforge.py --mode combo   --combo "walk:0.6,prince:0.3,pcfg:0.1"   --dict words_demo.txt --pcfg-train rockyou.txt   --count 3_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode combo   --combo "walk:0.6,prince:0.3,pcfg:0.1"   --dict words_demo.txt --pcfg-train rockyou.txt   --count 3000000 | hashcat -a 0 -m 1000 hashes.ntlm
 ```
 
 ---
@@ -98,7 +98,7 @@ python3 pwforge.py --mode combo   --combo "walk:0.6,prince:0.3,pcfg:0.1"   --dic
 
 ```bash
 # Skip low‑entropy strings and drop anything in denylist.txt
-python3 pwforge.py --mode pw --min-entropy 2.2 --no-dict denylist.txt   --count 2_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode pw --min-entropy 2.2 --no-dict denylist.txt   --count 2000000 | hashcat -a 0 -m 1000 hashes.ntlm
 ```
 
 - `--min-entropy <H>`: keep only candidates with Shannon entropy ≥ H  
@@ -110,19 +110,19 @@ python3 pwforge.py --mode pw --min-entropy 2.2 --no-dict denylist.txt   --count 
 
 ```bash
 # Plain file
-python3 pwforge.py --mode pw --count 5_000_000 --out pw.txt --no-stdout
+python3 pwforge.py --mode pw --count 5000000 --out pw.txt --no-stdout
 
 # Gzip (recommended for huge runs)
-python3 pwforge.py --mode walk --count 5_000_000 --out walks.txt.gz --gz --no-stdout
+python3 pwforge.py --mode walk --count 5000000 --out walks.txt.gz --gz --no-stdout
 
 # Split into 8 parts (mutually exclusive with --mp-workers)
-python3 pwforge.py --mode pw --count 80_000_000 --split 8 --out pw.txt --gz --no-stdout
-# => pw_00000000.txt.gz ... pw_00000007.txt.gz
+python3 pwforge.py --mode pw --count 80000000 --split 8 --out pw.txt --gz --no-stdout
+# => pw00000000.txt.gz ... pw00000007.txt.gz
 ```
 
 **WSL/Linux tip:** avoid `/mnt/c/...` for heavy I/O; use `/home` or `/dev/shm`:
 ```bash
-python3 pwforge.py --mode pw --count 10_000_000 --out /dev/shm/pw.txt --no-stdout
+python3 pwforge.py --mode pw --count 10000000 --out /dev/shm/pw.txt --no-stdout
 ```
 
 ---
@@ -133,7 +133,7 @@ python3 pwforge.py --mode pw --count 10_000_000 --out /dev/shm/pw.txt --no-stdou
 **Requires** `--out` **and** `--no-stdout`.
 
 ```bash
-python3 pwforge.py --mode markov   --markov-train rockyou.txt   --count 80_000_000 --mp-workers 8   --out markov.txt.gz --gz --no-stdout --seed 42
+python3 pwforge.py --mode markov   --markov-train rockyou.txt   --count 80000000 --mp-workers 8   --out markov.txt.gz --gz --no-stdout --seed 42
 # => markov_w00.txt.gz ... markov_w07.txt.gz
 ```
 
@@ -164,21 +164,21 @@ python3 pwforge.py --mode markov   --markov-train rockyou.txt   --count 80_000_0
 
 ### Stream to Hashcat
 ```bash
-python3 pwforge.py --mode pw --count 1_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
-python3 pwforge.py --mode walk --count 2_000_000 --starts-file starts.json | hashcat -a 0 -m 1000 hashes.ntlm
-python3 pwforge.py --mode markov --markov-train rockyou.txt --count 2_000_000 | hashcat -a 0 -m 0 hashes.md5
-python3 pwforge.py --mode pcfg --pcfg-train rockyou.txt --count 1_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
-python3 pwforge.py --mode neural --model finetuned_model.pt --count 1_000_000 | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode pw --count 1000000 | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode walk --count 2000000 --starts-file starts.json | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode markov --markov-train rockyou.txt --count 2000000 | hashcat -a 0 -m 0 hashes.md5
+python3 pwforge.py --mode pcfg --pcfg-train rockyou.txt --count 1000000 | hashcat -a 0 -m 1000 hashes.ntlm
+python3 pwforge.py --mode neural --model finetuned_model.pt --count 1000000 | hashcat -a 0 -m 1000 hashes.ntlm
 ```
 
 ### Stream to John
 ```bash
-python3 pwforge.py --mode prince --dict words_demo.txt --count 1_000_000 | john --stdin --format=nt hashes/*
+python3 pwforge.py --mode prince --dict words_demo.txt --count 1000000 | john --stdin --format=nt hashes/*
 ```
 
 ### File then crack
 ```bash
-python3 pwforge.py --mode prince --dict words_demo.txt --count 1_000_000 --out prince.txt --no-stdout
+python3 pwforge.py --mode prince --dict words_demo.txt --count 1000000 --out prince.txt --no-stdout
 hashcat -a 0 -m 1000 hashes.ntlm prince.txt
 ```
 
@@ -195,8 +195,8 @@ printf "%s\n" pw walk markov pcfg | xargs -P4 -I{} sh -c 'python3 pwforge.py --m
 - `--chunk N` controls internal batch size (default 100k). Increase for faster throughput on high‑RAM systems.
 
 ```bash
-python3 pwforge.py --mode pw --seed 1337 --count 1_000_000 --out stable.txt --no-stdout
-python3 pwforge.py --mode pw --chunk 500_000 --count 5_000_000 --out pw.txt --no-stdout
+python3 pwforge.py --mode pw --seed 1337 --count 1000000 --out stable.txt --no-stdout --append
+python3 pwforge.py --mode pw --chunk 500000 --count 5000000 --out pw.txt --no-stdout --append
 ```
 
 ---
