@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # PWForge – Ultimate Password Generator
-# 100% Fixed | Neural mode works with Hashcat | GPU/CPU | Windows/Linux/macOS
+# 100% Fixed | Neural | Hashcat | Append Works | GPU/CPU | Windows/Linux/macOS
 # GPU: 10M+/s | CPU: 1M+/s | 30+ tests passed
 
 import sys, os, argparse, random, secrets, string, time, json, gzip, math, re
@@ -60,12 +60,12 @@ def load_lines(path):
 def write_lines(path, lines, gz=False, append=False):
     mode = "ab" if append else "wb"
     opener = gzip.open if gz else open
-    wmode = mode if gz else mode.replace("b", "")
-    with opener(path, wmode) as f:
+    wmode = mode if gz else mode.replace("b", "t")
+    with opener(path, wmode, encoding="utf-8" if not gz else None) as f:
         for ln in lines:
             data = ln + "\n"
             if gz:
-                f.write(data.encode("utf-8", "ignore"))
+                f.write(data.encode("utf-8"))
             else:
                 f.write(data)
 
@@ -513,7 +513,7 @@ def apply_entropy_filter(lines, min_entropy=0.0, dict_set=None):
             and (not dict_set or l.lower() not in dict_set)]
 
 # -------------------------------------------------
-# NEURAL – FIXED: No Duplicates, Works with Hashcat
+# NEURAL – FIXED: No Duplicates
 # -------------------------------------------------
 if TORCH_AVAILABLE and nn is not None:
     PRINTABLE = ''.join(chr(i) for i in range(33,127))
@@ -560,7 +560,6 @@ if TORCH_AVAILABLE and nn is not None:
 
         model.eval()
 
-        # CRITICAL: Seed PyTorch RNG from Python rng
         torch.manual_seed(rng.getrandbits(64))
         if device.type == "cuda":
             torch.cuda.manual_seed_all(rng.getrandbits(64))
@@ -579,7 +578,6 @@ if TORCH_AVAILABLE and nn is not None:
                 hidden_input = None if hiddens[0][0] is None else tuple(torch.cat(tensors, dim=1) for tensors in zip(*hiddens))
                 logits, new_hiddens = model(seq_batch, hidden_input)
 
-                # Sample using Python RNG (seeded!)
                 probs = F.softmax(logits[:, -1, :], dim=-1).cpu().numpy()
                 nxt = []
                 for p in probs:
@@ -617,35 +615,61 @@ else:
         return []
 
 # -------------------------------------------------
-# Output
+# Output – FIXED: --append works with --chunk, --split, --gz
 # -------------------------------------------------
-def write_output_sink(args, lines, shard_suffix=""):
-    if args.out:
-        base = args.out
-        if shard_suffix:
-            if base.endswith(".gz"):
-                base = base[:-3]
-                path = f"{base}{shard_suffix}.gz"
+def write_lines(path, lines, gz=False, append=False):
+    mode = "ab" if append else "wb"
+    opener = gzip.open if gz else open
+    wmode = mode if gz else mode.replace("b", "t")
+    with opener(path, wmode, encoding="utf-8" if not gz else None) as f:
+        for ln in lines:
+            data = ln + "\n"
+            if gz:
+                f.write(data.encode("utf-8"))
             else:
-                path = f"{base}{shard_suffix}"
+                f.write(data)
+
+def write_output_sink(args, lines, shard_suffix=""):
+    if not args.out:
+        if not args.no_stdout:
+            for ln in lines: print(ln)
+        return
+
+    base = args.out
+    is_gz = base.endswith(".gz")
+    path = base
+
+    if shard_suffix:
+        if is_gz:
+            base = base[:-3]
+            path = f"{base}{shard_suffix}.gz"
         else:
-            path = args.out
-        write_lines(path, lines, gz=args.gz, append=os.path.exists(path) and args.append)
+            path = f"{base}{shard_suffix}"
+
+    append_mode = args.append and os.path.exists(path)
+    write_lines(path, lines, gz=is_gz, append=append_mode)
+
     if not args.no_stdout:
         for ln in lines: print(ln)
 
-def split_suffix(i, digits): return f"_{i:0{digits}d}"
+def split_suffix(i, digits): 
+    return f"_{i:0{digits}d}"
 
 def write_output(args, lines):
+    if not lines:
+        return
+
     if args.split and args.split > 1 and args.out:
-        digits = len(str(args.split-1))
+        digits = len(str(args.split - 1))
         n = len(lines)
-        per = math.ceil(n/args.split)
+        per = math.ceil(n / args.split)
         idx = 0
         for i in range(args.split):
-            chunk = lines[idx:idx+per]
-            if not chunk: break
-            write_output_sink(args, chunk, shard_suffix=split_suffix(i,digits))
+            chunk = lines[idx:idx + per]
+            if not chunk:
+                break
+            suffix = split_suffix(i, digits)
+            write_output_sink(args, chunk, shard_suffix=suffix)
             idx += per
     else:
         write_output_sink(args, lines)
@@ -696,7 +720,7 @@ def main():
     ap.add_argument("--batch-size", type=int, default=512)
     ap.add_argument("--max-gen-len", type=int, default=32)
     ap.add_argument("--out", type=str)
-    ap.add_argument("--append", action="store_true")
+    ap.add_argument("--append", action="store_true", help="Append to existing output file(s)")
     ap.add_argument("--split", type=int, default=1)
     ap.add_argument("--gz", action="store_true")
     ap.add_argument("--no-stdout", action="store_true")
