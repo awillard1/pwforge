@@ -1,5 +1,5 @@
 
-# PWForge – Professional Password Candidate Generator
+# PWForge – Password Candidate Generator
 
 High‑performance, multi‑mode wordlist generator designed for **Hashcat** and **John the Ripper**.  
 Streams to STDOUT for live cracking or writes compressed/split files for large runs.
