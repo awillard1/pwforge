@@ -17,9 +17,9 @@ Streams to STDOUT for live cracking or writes compressed/split files for large r
 - `pip install numpy`
 
 On windows you may need to use
-- python3 -m pip install torch
-- python3 -m pip install tqdm
-- python3 -m pip install numpy
+- `python3 -m pip install torch`
+- `python3 -m pip install tqdm`
+- `python3 -m pip install numpy`
 
 ### Quick check
 ```bash
