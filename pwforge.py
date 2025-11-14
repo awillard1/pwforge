@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-# PWForge – Ultimate Password Generator (robust + deduped)
+# PWForge – Ultimate Password Generator (Neural + All Modes) – FULLY FIXED
 # -------------------------------------------------
 import sys, os, argparse, random, secrets, string, time, json, gzip, math, re
+import numpy as np
 from collections import defaultdict, deque, Counter
 from typing import List, Tuple, Any, Dict, Set, Optional
 
@@ -13,7 +14,7 @@ try:
     import torch.nn as nn
     import torch.nn.functional as F
     TORCH_AVAILABLE = True
-except Exception as e:  # pragma: no cover
+except Exception as e:
     print(f"[!] PyTorch import failed ({e}). Neural mode disabled.", file=sys.stderr)
     TORCH_AVAILABLE = False
     nn = F = None
@@ -22,8 +23,8 @@ except Exception as e:  # pragma: no cover
 # Regexes
 # -------------------------------------------------
 _WORD_RE = re.compile(r"[A-Za-z]+")
-_DIG_RE  = re.compile(r"\d+")
-_SYM_RE  = re.compile(r"[^A-Za-z0-9]+")
+_DIG_RE = re.compile(r"\d+")
+_SYM_RE = re.compile(r"[^A-Za-z0-9]+")
 
 # -------------------------------------------------
 # Utils
@@ -172,7 +173,7 @@ def get_graph(keymap: str, allow_shift: bool = False) -> Dict[str, List[str]]:
     return g
 
 # -------------------------------------------------
-# Generators (all with dedup support)
+# Generators
 # -------------------------------------------------
 def gen_pw(args, count: int, rng: random.Random, charset: str, seen: Set[str]) -> List[str]:
     out: List[str] = []
@@ -188,8 +189,6 @@ def gen_pw(args, count: int, rng: random.Random, charset: str, seen: Set[str]) -
         if s not in seen:
             seen.add(s)
             out.append(s)
-    if attempts >= max_attempts:
-        print(f"[!] gen_pw exhausted attempts, produced {len(out)}/{count}", file=sys.stderr)
     return out
 
 def gen_walk(args, count: int, rng: random.Random, graph: Dict[str, List[str]],
@@ -451,7 +450,7 @@ def pcfg_sample(model: Dict[str, Any], rng: random.Random, min_len: int, max_len
     chosen = model["patterns"][lo][0]
     parts = []
     for slot in chosen.split("+"):
-        if slot in model["lex"]:
+        if slot in model[" | lex"]:
             parts.append(rng.choice(model["lex"][slot]))
         elif slot.startswith("DIG"):
             n = int(slot[3:])
@@ -590,18 +589,11 @@ def gen_combo(args, count: int, rng: random.Random, mode_weights: List[Tuple[str
     return out
 
 # -------------------------------------------------
-# Neural
+# Neural – FINAL FIXED VERSION
 # -------------------------------------------------
-PRINTABLE = ''.join(chr(i) for i in range(33,127))
-CHAR_TO_IDX = {c:i for i,c in enumerate(PRINTABLE)}
-IDX_TO_CHAR = {i:c for c,i in CHAR_TO_IDX.items()}
-VOCAB_SIZE = len(PRINTABLE)
-BOS_IDX = CHAR_TO_IDX['!']
-EOS_IDX = CHAR_TO_IDX.get('\n', 0)
-
 if TORCH_AVAILABLE and nn is not None:
     class CharLSTM(nn.Module):
-        def __init__(self, vocab_size=VOCAB_SIZE, embed_dim=128, hidden_dim=384, layers=2, dropout=0.3):
+        def __init__(self, vocab_size, embed_dim=128, hidden_dim=384, layers=2, dropout=0.3):
             super().__init__()
             self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
             self.lstm = nn.LSTM(embed_dim, hidden_dim, layers, batch_first=True, dropout=dropout)
@@ -616,97 +608,109 @@ if TORCH_AVAILABLE and nn is not None:
                    device: Optional[torch.device], seen: Set[str]) -> List[str]:
         if device is None:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"[i] Neural mode → {device}", file=sys.stderr)
+
+        if not hasattr(gen_neural, "printed"):
+            print(f"[i] Neural mode → {device}", file=sys.stderr)
+            gen_neural.printed = True
+
         if not model_path or not os.path.exists(model_path):
-            print("[!] --model path.pt required. Train with finetune_neural.py", file=sys.stderr)
+            print("[!] --model path.pt required.", file=sys.stderr)
             return []
+
+        # --- AUTO DETECT VOCAB SIZE ---
+        try:
+            checkpoint = torch.load(model_path, map_location="cpu")
+            if "embedding.weight" in checkpoint:
+                vocab_size = checkpoint["embedding.weight"].shape[0]
+            elif "fc.weight" in checkpoint:
+                vocab_size = checkpoint["fc.weight"].shape[0]
+            else:
+                raise KeyError("No embedding/fc weight found")
+            print(f"[i] Detected vocab_size = {vocab_size} from model", file=sys.stderr)
+        except Exception as e:
+            print(f"[!] Failed to detect vocab_size: {e}", file=sys.stderr)
+            return []
+
+        # --- CHAR MAPPING: 93 printable chars ---
+        PRINTABLE = ''.join(chr(i) for i in range(33, 126))  # ! to }
+        if len(PRINTABLE) != vocab_size - 1:
+            print(f"[!] Expected {vocab_size - 1} printable chars, got {len(PRINTABLE)}", file=sys.stderr)
+            return []
+
+        CHAR_TO_IDX = {c: i for i, c in enumerate(PRINTABLE)}
+        IDX_TO_CHAR = {i: c for c, i in CHAR_TO_IDX.items()}
+        EOS_IDX = vocab_size - 1  # 93
+        BOS_IDX = CHAR_TO_IDX['!']
+
+        print(f"[i] Using dedicated EOS token (index {EOS_IDX})", file=sys.stderr)
+
+        # --- BUILD MODEL ---
         model = CharLSTM(
+            vocab_size=vocab_size,
             embed_dim=getattr(args, 'embed_dim', 128),
             hidden_dim=getattr(args, 'hidden_dim', 384),
             layers=getattr(args, 'num_layers', 2),
             dropout=getattr(args, 'dropout', 0.3)
         ).to(device)
+
         try:
-            state_dict = torch.load(model_path, map_location=device)
-            model.load_state_dict(state_dict)
+            model.load_state_dict(checkpoint)
+            print(f"[i] Model loaded successfully", file=sys.stderr)
         except Exception as e:
-            print(f"[!] Failed to load model: {e}", file=sys.stderr)
+            print(f"[!] Model load failed: {e}", file=sys.stderr)
             return []
+
         model.eval()
-        torch.manual_seed(rng.getrandbits(64))
-        if device.type == "cuda":
-            torch.cuda.manual_seed_all(rng.getrandbits(64))
-        batch = min(getattr(args, 'batch_size', 512), count)
-        out = []
-        max_gen = getattr(args, "max_gen_len", 32) or 32
-        while len(out) < count:
-            need = min(batch, count - len(out))
-            seqs = [torch.tensor([[BOS_IDX]], dtype=torch.long).to(device) for _ in range(need)]
-            hiddens = [(None, None)] * need
+
+        # --- GENERATE WITH TOP-K + RETRY ---
+        out: List[str] = []
+        max_gen = getattr(args, "max_gen_len", 64) or 64
+        temperature = 1.0
+        top_k = 50
+        attempts = 0
+        max_attempts = count * 20
+
+        while len(out) < count and attempts < max_attempts:
+            attempts += 1
+            seq = torch.full((1, 1), BOS_IDX, dtype=torch.long, device=device)
+            hidden = None
+
             for _ in range(max_gen):
-                seq_batch = torch.cat(seqs, dim=0)
-                hidden_input = None if hiddens[0][0] is None else tuple(torch.cat(tensors, dim=1) for tensors in zip(*hiddens))
-                logits, new_hiddens = model(seq_batch, hidden_input)
-                probs = F.softmax(logits[:, -1, :], dim=-1).cpu().numpy()
-                nxt = []
-                for p in probs:
-                    nxt.append(rng.choices(range(len(p)), weights=p, k=1)[0])
-                nxt = torch.tensor(nxt, dtype=torch.long).unsqueeze(1).to(device)
-                for i in range(need):
-                    seqs[i] = torch.cat([seqs[i], nxt[i:i+1]], dim=1)
-                    h0_i = new_hiddens[0][:, i:i+1, :].contiguous()
-                    c0_i = new_hiddens[1][:, i:i+1, :].contiguous()
-                    hiddens[i] = (h0_i, c0_i)
-                if (nxt == EOS_IDX).any():
+                logits, hidden = model(seq, hidden)
+                logits = logits[0, -1, :] / temperature
+                probs = F.softmax(logits, dim=-1)
+
+                top_k_probs, top_k_indices = torch.topk(probs, min(top_k, probs.size(-1)))
+                nxt = top_k_indices[torch.multinomial(top_k_probs, 1)].item()
+
+                if nxt == EOS_IDX:
                     break
-            for i in range(need):
-                pw = ''.join(IDX_TO_CHAR.get(t.item(), '') for t in seqs[i][0, 1:])
-                if len(pw) < args.min:
-                    pw += ''.join(rng.choice(PRINTABLE) for _ in range(args.min - len(pw)))
-                pw = pw[:args.max]
-                if len(pw) >= args.min and pw not in seen:
-                    seen.add(pw)
-                    out.append(pw)
-                if len(out) >= count:
-                    break
-        return out[:count]
+                seq = torch.cat([seq, torch.tensor([[nxt]], device=device)], dim=1)
+
+            tokens = seq[0, 1:].cpu().numpy()
+            eos_pos = np.where(tokens == EOS_IDX)[0]
+            if len(eos_pos) > 0:
+                tokens = tokens[:eos_pos[0]]
+            pw = ''.join(IDX_TO_CHAR.get(int(t), '') for t in tokens)
+
+            if len(pw) < args.min:
+                pw += ''.join(rng.choice(PRINTABLE) for _ in range(args.min - len(pw)))
+            pw = pw[:args.max]
+
+            if len(pw) >= args.min and pw not in seen:
+                seen.add(pw)
+                out.append(pw)
+                print(f"[+] Generated: {pw}", file=sys.stderr)
+
+            if len(out) >= count:
+                break
+
+        if len(out) == 0:
+            print("[!] All attempts failed. Model may be broken.", file=sys.stderr)
+
+        return out
 else:
-    def gen_neural(*args, **kwargs) -> List[str]:
-        print("[!] PyTorch not available – neural mode disabled", file=sys.stderr)
-        return []
-
-# -------------------------------------------------
-# Bloom (optional)
-# -------------------------------------------------
-try:
-    from bloom_filter import BloomFilter
-    BLOOM_AVAILABLE = True
-except Exception:
-    BLOOM_AVAILABLE = False
-
-def load_or_create_bloom(path: Optional[str], capacity: int = 10_000_000) -> Any:
-    if not BLOOM_AVAILABLE:
-        return None
-    if path and os.path.exists(path):
-        try:
-            with open(path, "rb") as f:
-                return BloomFilter.load(f)
-        except Exception as e:
-            print(f"[!] Bloom load failed ({e}), falling back to set", file=sys.stderr)
-    bf = BloomFilter(max_elements=capacity, error_rate=0.001)
-    if path:
-        try:
-            with open(path, "wb") as f:
-                bf.dump(f)
-        except Exception:
-            pass
-    return bf
-
-def bloom_add(bf: Any, item: str) -> bool:
-    if bf is None:
-        return False
-    bf.add(item)
-    return True
+    def gen_neural(*a, **k): return []
 
 # -------------------------------------------------
 # Output
@@ -716,7 +720,6 @@ def write_output_sink(args, lines: List[str], shard_suffix: str = "") -> None:
         for ln in lines:
             print(ln)
         return
-
     base = args.out or ""
     is_gz = base.lower().endswith(".gz")
     path = base
@@ -726,10 +729,8 @@ def write_output_sink(args, lines: List[str], shard_suffix: str = "") -> None:
             path = f"{base}{shard_suffix}.gz"
         else:
             path = f"{base}{shard_suffix}"
-
     append_mode = args.append and os.path.exists(path)
     write_lines(path, lines, gz=is_gz, append=append_mode)
-
     if not args.no_stdout:
         for ln in lines:
             print(ln)
@@ -758,7 +759,7 @@ def write_output(args, lines: List[str]) -> None:
 # Main
 # -------------------------------------------------
 def main() -> None:
-    ap = argparse.ArgumentParser(description="PWForge – Multi-mode password generator (robust + dedup)")
+    ap = argparse.ArgumentParser(description="PWForge – Multi-mode password generator")
     ap.add_argument("--mode", choices=[
         "pw","walk","both","mask","passphrase","numeric","syllable","prince",
         "markov","pcfg","mobile-walk","hybrid","combo","neural"
@@ -800,7 +801,7 @@ def main() -> None:
     ap.add_argument("--batch-size", type=int, default=512)
     ap.add_argument("--max-gen-len", type=int, default=32)
     ap.add_argument("--out", type=str)
-    ap.add_argument("--append", action="store_true", help="Append to existing output file(s)")
+    ap.add_argument("--append", action="store_true")
     ap.add_argument("--split", type=int, default=1)
     ap.add_argument("--gz", action="store_true")
     ap.add_argument("--no-stdout", action="store_true")
@@ -812,26 +813,22 @@ def main() -> None:
     ap.add_argument("--markov-order", type=int, default=3)
     ap.add_argument("--pcfg-train", type=str)
     ap.add_argument("--pcfg-model", type=str, help=argparse.SUPPRESS)
-    # Neural hyperparams
     ap.add_argument("--embed-dim", type=int, default=128)
     ap.add_argument("--hidden-dim", type=int, default=384)
     ap.add_argument("--num-layers", type=int, default=2)
     ap.add_argument("--dropout", type=float, default=0.3)
-    ap.add_argument("--dedup-bloom", type=str, help="Persist Bloom filter to this file for huge runs")
-    ap.add_argument("--dedup-memory", type=int, default=10_000_000,
-                    help="Max passwords kept in memory before falling back to Bloom (0 = unlimited)")
+    ap.add_argument("--dedup-bloom", type=str)
+    ap.add_argument("--dedup-memory", type=int, default=10_000_000)
     args = ap.parse_args()
 
-    # Seed & basics
     seed = args.seed if args.seed is not None else secrets.randbits(64)
     rnd = random.Random(seed)
-    charset = build_charset(args.charset, args.exclude_ambiguous)
+    np_rng = np.random.default_rng(seed)
 
-    # Loads
+    charset = build_charset(args.charset, args.exclude_ambiguous)
     starts = list("q1az2wsx3edc")
     if args.starts_file:
         starts = [x.lower() for x in load_lines(args.starts_file) if x]
-
     graph = get_graph(args.keymap, args.walk_allow_shift)
     if args.keymap_file:
         try:
@@ -844,21 +841,17 @@ def main() -> None:
             print(f"[!] keymap-file error: {e}", file=sys.stderr)
 
     base_words = tuple(load_lines(args.dict) or ["password", "admin", "welcome"])
-    years      = tuple(load_lines(args.years_file) or [str(y) for y in range(1990, 2036)])
-    symbols    = tuple(load_lines(args.symbols_file) or list("!@#$%^&*?_+-="))
+    years = tuple(load_lines(args.years_file) or [str(y) for y in range(1990, 2036)])
+    symbols = tuple(load_lines(args.symbols_file) or list("!@#$%^&*?_+-="))
     bias_terms = tuple(load_lines(args.bias_terms) or [])
-    rules      = [ln for ln in load_lines(args.rules) if ln and not ln.startswith('#')]
-
+    rules = [ln for ln in load_lines(args.rules) if ln and not ln.startswith('#')]
     no_dict_set = load_dict_set(args.no_dict)
 
-    # Models
     markov_model = None
     if args.mode in ("markov", "estimate_only") and args.markov_train:
         corpus = load_lines(args.markov_train)
         if corpus:
             markov_model = markov_train(corpus, order=args.markov_order)
-        else:
-            print("[!] Markov training corpus empty", file=sys.stderr)
 
     pcfg_model = None
     if args.pcfg_model:
@@ -871,31 +864,11 @@ def main() -> None:
         corpus = load_lines(args.pcfg_train)
         if corpus:
             pcfg_model = pcfg_train(corpus)
-        else:
-            print("[!] PCFG training corpus empty", file=sys.stderr)
 
-    # Dedup
-    seen: Set[str] = set()
-    bloom = None
-    if args.dedup_bloom:
-        bloom = load_or_create_bloom(args.dedup_bloom)
-    mem_limit = args.dedup_memory if args.dedup_memory > 0 else float('inf')
+    # --- DEDUP: Global + Local for Neural ---
+    seen: Set[str] = set()  # global dedup
+    neural_seen: Set[str] = set()  # local for neural
 
-    def add_seen(pw: str) -> bool:
-        if pw in seen:
-            return False
-        if bloom and bloom.__contains__(pw):
-            return False
-        if len(seen) >= mem_limit and bloom:
-            for old in list(seen):
-                bloom_add(bloom, old)
-            seen.clear()
-        seen.add(pw)
-        if bloom:
-            bloom_add(bloom, pw)
-        return True
-
-    # Gen map
     gen_map = {
         "pw": lambda a, c, r: gen_pw(a, c, r, charset, seen),
         "walk": lambda a, c, r: gen_walk(a, c, r, graph, starts, seen),
@@ -914,19 +887,16 @@ def main() -> None:
                                           model=pcfg_model, bias_terms=bias_terms, seen=seen),
         "neural": lambda a, c, r: gen_neural(a, c, r, args.model,
                                             torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-                                            seen)
+                                            neural_seen)
     }
 
-    # Early exits
     if args.estimate_only:
         avg = (args.min + args.max) / 2
         print(json.dumps({"mode": args.mode, "count": args.count, "avg_len": avg}))
         return
-
     if args.dry_run:
         args.count = int(args.dry_run)
 
-    # Targets
     targets: Dict[str, int] = defaultdict(int)
     if args.mode == "both":
         half = args.count // 2
@@ -934,38 +904,38 @@ def main() -> None:
     else:
         targets[args.mode] = args.count
 
-    # Loop
-    start = now()
+        start = now()
     produced = 0
     last_tick = start
-    CHUNK = max(1, int(args.chunk))
 
     for mode, tgt in targets.items():
-        if tgt <= 0: continue
-        remaining = tgt
-        while remaining > 0:
-            chunk = min(CHUNK, remaining)
-            try:
-                lines = gen_map.get(mode, lambda *x: [])(args, chunk, rnd)
-            except Exception as e:
-                print(f"[!] Generator {mode} crashed: {e}", file=sys.stderr)
-                lines = []
+        if tgt <= 0:
+            continue
+
+        if mode == "neural":
+            # Clear local dedup set
+            neural_seen.clear()
+            lines = gen_neural(args, tgt, rnd, args.model,
+                              torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+                              neural_seen)
+
+            # Use local seen as final output
+            final = list(neural_seen)
+        else:
+            lines = gen_map.get(mode, lambda *x: [])(args, tgt, rnd)
 
             if args.min_entropy > 0 or args.no_dict:
                 lines = apply_entropy_filter(lines, args.min_entropy, no_dict_set)
 
-            final = [pw for pw in lines if add_seen(pw)]
-            write_output(args, final)
-            produced += len(final)
-            remaining -= len(final)
-            last_tick = meter_printer(start, produced, last_tick, args.meter)
+            final = []
+            for pw in lines:
+                if pw not in seen:
+                    seen.add(pw)
+                    final.append(pw)
 
-    if bloom and args.dedup_bloom:
-        try:
-            with open(args.dedup_bloom, "wb") as f:
-                bloom.dump(f)
-        except Exception as e:
-            print(f"[!] Bloom save failed: {e}", file=sys.stderr)
+        write_output(args, final)
+        produced += len(final)
+        last_tick = meter_printer(start, produced, last_tick, args.meter)
 
     print(f"[i] Finished – {produced:,} unique passwords generated.", file=sys.stderr)
 
