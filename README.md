@@ -13,6 +13,8 @@ Streams to STDOUT for live cracking or writes compressed/split files for large r
 - **Python 3.8+** (tested on Linux, WSL, macOS)
 - Optional for `--mode neural`: **PyTorch** (CPU or CUDA build). Install from https://pytorch.org/get-started/locally/
 - Optional for large gzip merges: `gzip`, `zcat` available on your OS
+- pip install torch tqdm
+- pip install numpy
 
 ### Quick check
 ```bash
