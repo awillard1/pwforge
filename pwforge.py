@@ -1,24 +1,22 @@
 #!/usr/bin/env python3
-# PWForge – Ultimate Password Generator
-# 100% Fixed | Neural | Hashcat | Append Works | GPU/CPU | Windows/Linux/macOS
-# GPU: 10M+/s | CPU: 1M+/s | 30+ tests passed
-
+# PWForge – Ultimate Password Generator (robust + deduped)
+# -------------------------------------------------
 import sys, os, argparse, random, secrets, string, time, json, gzip, math, re
 from collections import defaultdict, deque, Counter
+from typing import List, Tuple, Any, Dict, Set, Optional
 
 # -------------------------------------------------
-# PyTorch – Safe Import (No crash if missing)
+# Safe imports
 # -------------------------------------------------
 try:
     import torch
     import torch.nn as nn
     import torch.nn.functional as F
     TORCH_AVAILABLE = True
-except ImportError:
-    print("[!] PyTorch not installed. Neural mode disabled.", file=sys.stderr)
+except Exception as e:  # pragma: no cover
+    print(f"[!] PyTorch import failed ({e}). Neural mode disabled.", file=sys.stderr)
     TORCH_AVAILABLE = False
-    nn = None
-    F = None
+    nn = F = None
 
 # -------------------------------------------------
 # Regexes
@@ -32,16 +30,18 @@ _SYM_RE  = re.compile(r"[^A-Za-z0-9]+")
 # -------------------------------------------------
 AMBIGUOUS = set("Il1O0")
 
-def now(): return time.time()
+def now() -> float:
+    return time.time()
 
-def build_charset(base, exclude_ambiguous=False):
+def build_charset(base: Optional[str], exclude_ambiguous: bool = False) -> str:
     ch = base or (string.ascii_letters + string.digits + "!@#$%^&*()_+-=")
     if exclude_ambiguous:
         ch = "".join(c for c in ch if c not in AMBIGUOUS)
     return ch
 
-def class_ok(s, reqs):
-    if not reqs: return True
+def class_ok(s: str, reqs: Optional[str]) -> bool:
+    if not reqs:
+        return True
     want = {p.strip().lower() for p in reqs.split(",")}
     has = {
         "upper": any(c.isupper() for c in s),
@@ -51,26 +51,35 @@ def class_ok(s, reqs):
     }
     return all(has.get(k, True) for k in want)
 
-def load_lines(path):
-    if not path or not os.path.exists(path): return []
-    opener = gzip.open if path.endswith(('.gz', '.gzip')) else open
-    with opener(path, "rt", encoding="utf-8", errors="ignore") as f:
-        return [ln.strip() for ln in f if ln.strip()]
+def load_lines(path: Optional[str]) -> List[str]:
+    if not path or not os.path.exists(path):
+        return []
+    opener = gzip.open if path.lower().endswith(('.gz', '.gzip')) else open
+    try:
+        with opener(path, "rt", encoding="utf-8", errors="ignore") as f:
+            return [ln.strip() for ln in f if ln.strip()]
+    except Exception as e:
+        print(f"[!] Failed to read {path}: {e}", file=sys.stderr)
+        return []
 
-def write_lines(path, lines, gz=False, append=False):
+def write_lines(path: str, lines: List[str], gz: bool = False, append: bool = False) -> None:
     mode = "ab" if append else "wb"
     opener = gzip.open if gz else open
     wmode = mode if gz else mode.replace("b", "t")
-    with opener(path, wmode, encoding="utf-8" if not gz else None) as f:
-        for ln in lines:
-            data = ln + "\n"
-            if gz:
-                f.write(data.encode("utf-8"))
-            else:
-                f.write(data)
+    try:
+        with opener(path, wmode, encoding="utf-8" if not gz else None) as f:
+            for ln in lines:
+                data = ln + "\n"
+                if gz:
+                    f.write(data.encode("utf-8"))
+                else:
+                    f.write(data)
+    except Exception as e:
+        print(f"[!] Failed to write {path}: {e}", file=sys.stderr)
 
-def meter_printer(start, produced, last_tick, every):
-    if every <= 0: return last_tick
+def meter_printer(start: float, produced: int, last_tick: float, every: int) -> float:
+    if every <= 0:
+        return last_tick
     t = now()
     if produced and produced % every == 0:
         dt = max(1e-9, t - start)
@@ -78,6 +87,25 @@ def meter_printer(start, produced, last_tick, every):
         print(f"[meter] {produced:,} lines, {lps:,} lps", file=sys.stderr)
         return t
     return last_tick
+
+def load_dict_set(path: Optional[str]) -> Set[str]:
+    if not path or not os.path.exists(path):
+        return set()
+    return {ln.strip().lower() for ln in load_lines(path) if ln.strip()}
+
+def shannon_entropy(s: str) -> float:
+    if not s:
+        return 0.0
+    cnt = Counter(s)
+    L = len(s)
+    return -sum((c/L)*math.log2(c/L) for c in cnt.values())
+
+def apply_entropy_filter(lines: List[str], min_entropy: float = 0.0, dict_set: Optional[Set[str]] = None) -> List[str]:
+    if min_entropy <= 0 and not dict_set:
+        return lines
+    return [l for l in lines
+            if (min_entropy <= 0 or shannon_entropy(l) >= min_entropy)
+            and (not dict_set or l.lower() not in dict_set)]
 
 # -------------------------------------------------
 # Keyboard Graphs
@@ -130,7 +158,7 @@ MOBILE_GRAPH = {
     '0': ['8'], '*': ['7','0','#'], '#': ['9','0','*']
 }
 
-def get_graph(keymap, allow_shift=False):
+def get_graph(keymap: str, allow_shift: bool = False) -> Dict[str, List[str]]:
     if keymap == "qwerty":
         g = {k: list(v) for k, v in GRAPH_QWERTY.items()}
     elif keymap == "qwertz":
@@ -144,23 +172,34 @@ def get_graph(keymap, allow_shift=False):
     return g
 
 # -------------------------------------------------
-# Generators
+# Generators (all with dedup support)
 # -------------------------------------------------
-def gen_pw(args, count, rng, charset):
-    out = []
-    for _ in range(count):
+def gen_pw(args, count: int, rng: random.Random, charset: str, seen: Set[str]) -> List[str]:
+    out: List[str] = []
+    attempts = 0
+    max_attempts = count * 10
+    while len(out) < count and attempts < max_attempts:
+        attempts += 1
         length = rng.randint(args.min, args.max)
         while True:
             s = "".join(rng.choice(charset) for _ in range(length))
             if class_ok(s, args.require):
                 break
-        out.append(s)
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+    if attempts >= max_attempts:
+        print(f"[!] gen_pw exhausted attempts, produced {len(out)}/{count}", file=sys.stderr)
     return out
 
-def gen_walk(args, count, rng, graph, starts):
-    out = []
+def gen_walk(args, count: int, rng: random.Random, graph: Dict[str, List[str]],
+             starts: List[str], seen: Set[str]) -> List[str]:
+    out: List[str] = []
+    attempts = 0
+    max_attempts = count * 10
     window = max(1, args.window)
-    for _ in range(count):
+    while len(out) < count and attempts < max_attempts:
+        attempts += 1
         cur = rng.choice(starts)
         length = rng.randint(args.min, args.max)
         path = [cur]
@@ -180,13 +219,18 @@ def gen_walk(args, count, rng, graph, starts):
             s = s.capitalize()
         if args.suffix_digits:
             s += "".join(str(rng.randrange(10)) for _ in range(args.suffix_digits))
-        out.append(s)
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
     return out
 
-def gen_mobile_walk(args, count, rng):
-    out = []
+def gen_mobile_walk(args, count: int, rng: random.Random, seen: Set[str]) -> List[str]:
+    out: List[str] = []
+    attempts = 0
+    max_attempts = count * 10
     window = max(1, args.window)
-    for _ in range(count):
+    while len(out) < count and attempts < max_attempts:
+        attempts += 1
         cur = rng.choice(list(MOBILE_GRAPH.keys()))
         length = rng.randint(args.min, args.max)
         path = [cur]
@@ -201,46 +245,69 @@ def gen_mobile_walk(args, count, rng):
             nxt = rng.choice(choices)
             recent.append(nxt)
             path.append(nxt)
-        out.append("".join(path))
+        s = "".join(path)
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
     return out
 
-def gen_mask(args, count, rng, base_words, years, symbols):
-    out = []
-    for _ in range(count):
+def gen_mask(args, count: int, rng: random.Random, base_words: Tuple[str, ...], years: Tuple[str, ...], symbols: Tuple[str, ...], seen: Set[str]) -> List[str]:
+    out: List[str] = []
+    attempts = 0
+    max_attempts = count * 10
+    while len(out) < count and attempts < max_attempts:
+        attempts += 1
         w = rng.choice(base_words) if base_words else "Password"
         if args.upper_first:
             w = w[0].upper() + w[1:]
         y = rng.choice(years) if years else str(2000 + rng.randrange(26))
         sym = rng.choice(symbols) if symbols else "!"
         s = f"{w}{y}{sym}"
-        out.append(s)
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
     return out
 
-def gen_passphrase(args, count, rng, base_words):
-    out = []
+def gen_passphrase(args, count: int, rng: random.Random, base_words: Tuple[str, ...], seen: Set[str]) -> List[str]:
+    out: List[str] = []
+    attempts = 0
+    max_attempts = count * 10
     words = max(2, int(args.words))
     sep = args.sep
-    for _ in range(count):
+    while len(out) < count and attempts < max_attempts:
+        attempts += 1
         picks = [rng.choice(base_words) if base_words else "correct" for _ in range(words)]
         if args.upper_first and picks:
             picks[0] = picks[0].capitalize()
-        out.append(sep.join(picks))
+        s = sep.join(picks)
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
     return out
 
-def gen_numeric(args, count, rng):
-    out = []
-    for _ in range(count):
+def gen_numeric(args, count: int, rng: random.Random, seen: Set[str]) -> List[str]:
+    out: List[str] = []
+    attempts = 0
+    max_attempts = count * 10
+    while len(out) < count and attempts < max_attempts:
+        attempts += 1
         length = rng.randint(args.min, args.max)
-        out.append("".join(str(rng.randrange(10)) for _ in range(length)))
+        s = "".join(str(rng.randrange(10)) for _ in range(length))
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
     return out
 
 CONS = "bcdfghjklmnpqrstvwxyz"
 VOWS = "aeiou"
 
-def gen_syllable(args, count, rng):
-    out = []
+def gen_syllable(args, count: int, rng: random.Random, seen: Set[str]) -> List[str]:
+    out: List[str] = []
+    attempts = 0
+    max_attempts = count * 10
     tmpl = args.template or "CVC"
-    for _ in range(count):
+    while len(out) < count and attempts < max_attempts:
+        attempts += 1
         s = []
         for ch in tmpl:
             if ch == "C": s.append(rng.choice(CONS))
@@ -248,14 +315,19 @@ def gen_syllable(args, count, rng):
             else: s.append(ch)
         st = "".join(s)
         if args.upper_first: st = st.capitalize()
-        out.append(st)
+        if st not in seen:
+            seen.add(st)
+            out.append(st)
     return out
 
-def gen_prince(args, count, rng, base_words, bias_terms):
-    out = []
+def gen_prince(args, count: int, rng: random.Random, base_words: Tuple[str, ...], bias_terms: Tuple[str, ...], seen: Set[str]) -> List[str]:
+    out: List[str] = []
+    attempts = 0
+    max_attempts = count * 10
     mn = max(2, args.prince_min)
     mx = max(mn, args.prince_max)
-    for _ in range(count):
+    while len(out) < count and attempts < max_attempts:
+        attempts += 1
         k = rng.randint(mn, mx)
         toks = []
         for i in range(k):
@@ -268,13 +340,12 @@ def gen_prince(args, count, rng, base_words, bias_terms):
             s += "".join(str(rng.randrange(10)) for _ in range(args.prince_suffix_digits))
         if args.prince_symbol:
             s += args.prince_symbol
-        out.append(s)
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
     return out
 
-# -------------------------------------------------
-# Markov
-# -------------------------------------------------
-def markov_train(corpus_lines, order=3):
+def markov_train(corpus_lines: List[str], order: int = 3) -> Dict[str, Any]:
     BOS = "\x02"; EOS = "\x03"
     trans = defaultdict(lambda: defaultdict(int))
     for ln in corpus_lines:
@@ -296,7 +367,7 @@ def markov_train(corpus_lines, order=3):
         model[ctx] = (chars, cum, total)
     return {"order": order, "model": model, "BOS": BOS, "EOS": EOS}
 
-def markov_sample(m, rng, min_len, max_len):
+def markov_sample(m: Dict[str, Any], rng: random.Random, min_len: int, max_len: int) -> str:
     order = m["order"]; BOS = m["BOS"]; EOS = m["EOS"]; model = m["model"]
     ctx = BOS * order
     out = []
@@ -318,16 +389,24 @@ def markov_sample(m, rng, min_len, max_len):
         if len(out) >= max_len: break
     return "".join(out)
 
-def gen_markov(args, count, rng, model):
-    return [markov_sample(model, rng, args.min, args.max) for _ in range(count)]
+def gen_markov(args, count: int, rng: random.Random, model: Optional[Dict[str, Any]], seen: Set[str]) -> List[str]:
+    if not model:
+        return []
+    out: List[str] = []
+    attempts = 0
+    max_attempts = count * 10
+    while len(out) < count and attempts < max_attempts:
+        attempts += 1
+        s = markov_sample(model, rng, args.min, args.max)
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
 
-# -------------------------------------------------
-# PCFG
-# -------------------------------------------------
-def tokenize_line(line):
+def tokenize_line(line: str) -> List[str]:
     return _WORD_RE.findall(line) + _DIG_RE.findall(line) + _SYM_RE.findall(line)
 
-def classify_token(tok):
+def classify_token(tok: str) -> str:
     if _WORD_RE.fullmatch(tok):
         if tok and tok[0].isupper() and tok[1:].islower(): return "CapWord"
         if tok.islower(): return "lowWord"
@@ -340,14 +419,13 @@ def classify_token(tok):
         return f"SYM{len(tok)}"
     return "MISC"
 
-def pcfg_train(lines):
+def pcfg_train(lines: List[str]) -> Dict[str, Any]:
     pattern_counts = defaultdict(int)
     for ln in lines:
         toks = tokenize_line(ln)
         if not toks: continue
         patt = "+".join(classify_token(t) for t in toks)
         pattern_counts[patt] += 1
-
     lex = {k: set() for k in ("CapWord","lowWord","UPWORD","Word")}
     for ln in lines:
         for t in tokenize_line(ln):
@@ -356,15 +434,13 @@ def pcfg_train(lines):
     for k in lex:
         default = {"Password","admin","welcome"}
         lex[k] = tuple(list(lex[k])[:50_000] or default)
-
     patterns = list(pattern_counts.items())
     total = sum(c for _,c in patterns)
     cum = [0]
     for _,cnt in patterns: cum.append(cum[-1] + cnt)
-
     return {"patterns":patterns, "cumul":cum, "total":total, "lex":lex}
 
-def pcfg_sample(model, rng, min_len, max_len, years, symbols):
+def pcfg_sample(model: Dict[str, Any], rng: random.Random, min_len: int, max_len: int, years: Tuple[str, ...], symbols: Tuple[str, ...]) -> str:
     if model["total"] == 0: return ""
     r = rng.randrange(model["total"])
     lo, hi = 0, len(model["cumul"])-2
@@ -373,7 +449,6 @@ def pcfg_sample(model, rng, min_len, max_len, years, symbols):
         if r < model["cumul"][mid+1]: hi = mid
         else: lo = mid+1
     chosen = model["patterns"][lo][0]
-
     parts = []
     for slot in chosen.split("+"):
         if slot in model["lex"]:
@@ -393,13 +468,21 @@ def pcfg_sample(model, rng, min_len, max_len, years, symbols):
         cand += "".join(str(rng.randrange(10)) for _ in range(min_len-len(cand)))
     return cand[:max_len]
 
-def gen_pcfg(args, count, rng, model, years, symbols):
-    return [pcfg_sample(model, rng, args.min, args.max, years, symbols) for _ in range(count)]
+def gen_pcfg(args, count: int, rng: random.Random, model: Optional[Dict[str, Any]], years: Tuple[str, ...], symbols: Tuple[str, ...], seen: Set[str]) -> List[str]:
+    if not model:
+        return []
+    out: List[str] = []
+    attempts = 0
+    max_attempts = count * 10
+    while len(out) < count and attempts < max_attempts:
+        attempts += 1
+        s = pcfg_sample(model, rng, args.min, args.max, years, symbols)
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
 
-# -------------------------------------------------
-# Hybrid / Combo / Entropy
-# -------------------------------------------------
-def apply_rule(word, rule):
+def apply_rule(word: str, rule: str) -> str:
     if not rule: return word
     out = list(word)
     i = 0
@@ -433,9 +516,12 @@ def apply_rule(word, rule):
         i += 1
     return ''.join(out)
 
-def gen_hybrid(args, count, rng, base_words, rules, mask, years, symbols):
-    out = []
-    for _ in range(count):
+def gen_hybrid(args, count: int, rng: random.Random, base_words: Tuple[str, ...], rules: List[str], mask: Optional[str], years: Tuple[str, ...], symbols: Tuple[str, ...], seen: Set[str]) -> List[str]:
+    out: List[str] = []
+    attempts = 0
+    max_attempts = count * 10
+    while len(out) < count and attempts < max_attempts:
+        attempts += 1
         word = rng.choice(base_words)
         if rules:
             word = apply_rule(word, rng.choice(rules))
@@ -453,10 +539,12 @@ def gen_hybrid(args, count, rng, base_words, rules, mask, years, symbols):
             cand = word + mstr if rng.random() < 0.5 else mstr + word
         else:
             cand = word
-        out.append(cand)
+        if cand not in seen:
+            seen.add(cand)
+            out.append(cand)
     return out
 
-def parse_combo(spec):
+def parse_combo(spec: Optional[str]) -> List[Tuple[str, float]]:
     if not spec: return []
     parts = [p.strip() for p in spec.split(",") if p.strip()]
     modes, weights = [], []
@@ -471,58 +559,47 @@ def parse_combo(spec):
     if total == 0: return []
     return list(zip(modes, [w/total for w in weights]))
 
-def gen_combo(args, count, rng, mode_weights, generators, base_words, years, symbols, rules, mask, graph, starts, model, bias_terms):
-    out = []
+def gen_combo(args, count: int, rng: random.Random, mode_weights: List[Tuple[str, float]], gen_map: Dict[str, Any], base_words: Tuple[str, ...], years: Tuple[str, ...], symbols: Tuple[str, ...], rules: List[str], mask: Optional[str], graph: Dict[str, List[str]], starts: List[str], model: Optional[Dict[str, Any]], bias_terms: Tuple[str, ...], seen: Set[str]) -> List[str]:
+    out: List[str] = []
+    attempts = 0
+    max_attempts = count * 10
     mode_names = [m for m, _ in mode_weights]
     probs = [w for _, w in mode_weights]
-    for _ in range(count):
+    while len(out) < count and attempts < max_attempts:
+        attempts += 1
         mode = rng.choices(mode_names, probs)[0]
-        gen = generators.get(mode)
+        gen = gen_map.get(mode)
         if gen:
             if mode == "pcfg":
-                cand = gen(args, 1, rng, model, years, symbols)[0]
+                cand = gen(args, 1, rng, model, years, symbols, seen)[0]
             elif mode == "walk":
-                cand = gen(args, 1, rng, graph, starts)[0]
+                cand = gen(args, 1, rng, graph, starts, seen)[0]
             elif mode == "prince":
-                cand = gen(args, 1, rng, base_words, bias_terms)[0]
+                cand = gen(args, 1, rng, base_words, bias_terms, seen)[0]
             elif mode == "mask":
-                cand = gen(args, 1, rng, base_words, years, symbols)[0]
+                cand = gen(args, 1, rng, base_words, years, symbols, seen)[0]
             elif mode == "passphrase":
-                cand = gen(args, 1, rng, base_words)[0]
+                cand = gen(args, 1, rng, base_words, seen)[0]
             elif mode == "hybrid":
-                cand = gen(args, 1, rng, base_words, rules, mask, years, symbols)[0]
+                cand = gen(args, 1, rng, base_words, rules, mask, years, symbols, seen)[0]
             else:
-                cand = gen(args, 1, rng)[0]
-            out.append(cand)
+                cand = gen(args, 1, rng, seen)[0]
+            if cand and cand not in seen:
+                seen.add(cand)
+                out.append(cand)
     return out
 
-def shannon_entropy(s):
-    if not s: return 0.0
-    cnt = Counter(s)
-    L = len(s)
-    return -sum((c/L)*math.log2(c/L) for c in cnt.values())
-
-def load_dict_set(path):
-    if not path or not os.path.exists(path): return set()
-    return {ln.strip().lower() for ln in load_lines(path) if ln.strip()}
-
-def apply_entropy_filter(lines, min_entropy=0.0, dict_set=None):
-    if min_entropy <= 0 and not dict_set: return lines
-    return [l for l in lines
-            if (min_entropy <= 0 or shannon_entropy(l) >= min_entropy)
-            and (not dict_set or l.lower() not in dict_set)]
-
 # -------------------------------------------------
-# NEURAL – FIXED: No Duplicates
+# Neural
 # -------------------------------------------------
+PRINTABLE = ''.join(chr(i) for i in range(33,127))
+CHAR_TO_IDX = {c:i for i,c in enumerate(PRINTABLE)}
+IDX_TO_CHAR = {i:c for c,i in CHAR_TO_IDX.items()}
+VOCAB_SIZE = len(PRINTABLE)
+BOS_IDX = CHAR_TO_IDX['!']
+EOS_IDX = CHAR_TO_IDX.get('\n', 0)
+
 if TORCH_AVAILABLE and nn is not None:
-    PRINTABLE = ''.join(chr(i) for i in range(33,127))
-    CHAR_TO_IDX = {c:i for i,c in enumerate(PRINTABLE)}
-    IDX_TO_CHAR = {i:c for c,i in CHAR_TO_IDX.items()}
-    VOCAB_SIZE = len(PRINTABLE)
-    BOS_IDX = CHAR_TO_IDX['!']
-    EOS_IDX = CHAR_TO_IDX.get('\n', 0)
-
     class CharLSTM(nn.Module):
         def __init__(self, vocab_size=VOCAB_SIZE, embed_dim=128, hidden_dim=384, layers=2, dropout=0.3):
             super().__init__()
@@ -535,110 +612,114 @@ if TORCH_AVAILABLE and nn is not None:
             return self.fc(out), hidden
 
     @torch.no_grad()
-    def gen_neural(args, count, rng, model_path=None, device=None):
+    def gen_neural(args, count: int, rng: random.Random, model_path: Optional[str],
+                   device: Optional[torch.device], seen: Set[str]) -> List[str]:
         if device is None:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"[i] Neural mode → {device}", file=sys.stderr)
-
         if not model_path or not os.path.exists(model_path):
             print("[!] --model path.pt required. Train with finetune_neural.py", file=sys.stderr)
             return []
-
         model = CharLSTM(
             embed_dim=getattr(args, 'embed_dim', 128),
             hidden_dim=getattr(args, 'hidden_dim', 384),
             layers=getattr(args, 'num_layers', 2),
             dropout=getattr(args, 'dropout', 0.3)
         ).to(device)
-
         try:
             state_dict = torch.load(model_path, map_location=device)
             model.load_state_dict(state_dict)
         except Exception as e:
             print(f"[!] Failed to load model: {e}", file=sys.stderr)
             return []
-
         model.eval()
-
         torch.manual_seed(rng.getrandbits(64))
         if device.type == "cuda":
             torch.cuda.manual_seed_all(rng.getrandbits(64))
-
-        batch = min(args.batch_size, count)
+        batch = min(getattr(args, 'batch_size', 512), count)
         out = []
         max_gen = getattr(args, "max_gen_len", 32) or 32
-
         while len(out) < count:
             need = min(batch, count - len(out))
             seqs = [torch.tensor([[BOS_IDX]], dtype=torch.long).to(device) for _ in range(need)]
             hiddens = [(None, None)] * need
-
             for _ in range(max_gen):
                 seq_batch = torch.cat(seqs, dim=0)
                 hidden_input = None if hiddens[0][0] is None else tuple(torch.cat(tensors, dim=1) for tensors in zip(*hiddens))
                 logits, new_hiddens = model(seq_batch, hidden_input)
-
                 probs = F.softmax(logits[:, -1, :], dim=-1).cpu().numpy()
                 nxt = []
                 for p in probs:
                     nxt.append(rng.choices(range(len(p)), weights=p, k=1)[0])
                 nxt = torch.tensor(nxt, dtype=torch.long).unsqueeze(1).to(device)
-
                 for i in range(need):
                     seqs[i] = torch.cat([seqs[i], nxt[i:i+1]], dim=1)
                     h0_i = new_hiddens[0][:, i:i+1, :].contiguous()
                     c0_i = new_hiddens[1][:, i:i+1, :].contiguous()
                     hiddens[i] = (h0_i, c0_i)
-
                 if (nxt == EOS_IDX).any():
                     break
-
             for i in range(need):
                 pw = ''.join(IDX_TO_CHAR.get(t.item(), '') for t in seqs[i][0, 1:])
                 if len(pw) < args.min:
                     pw += ''.join(rng.choice(PRINTABLE) for _ in range(args.min - len(pw)))
                 pw = pw[:args.max]
-                if len(pw) >= args.min:
+                if len(pw) >= args.min and pw not in seen:
+                    seen.add(pw)
                     out.append(pw)
                 if len(out) >= count:
                     break
         return out[:count]
 else:
-    PRINTABLE = ""
-    CHAR_TO_IDX = {}
-    IDX_TO_CHAR = {}
-    VOCAB_SIZE = 0
-    BOS_IDX = 0
-    EOS_IDX = 0
-    def gen_neural(*args, **kwargs):
+    def gen_neural(*args, **kwargs) -> List[str]:
         print("[!] PyTorch not available – neural mode disabled", file=sys.stderr)
         return []
 
 # -------------------------------------------------
-# Output – FIXED: --append works with --chunk, --split, --gz
+# Bloom (optional)
 # -------------------------------------------------
-def write_lines(path, lines, gz=False, append=False):
-    mode = "ab" if append else "wb"
-    opener = gzip.open if gz else open
-    wmode = mode if gz else mode.replace("b", "t")
-    with opener(path, wmode, encoding="utf-8" if not gz else None) as f:
-        for ln in lines:
-            data = ln + "\n"
-            if gz:
-                f.write(data.encode("utf-8"))
-            else:
-                f.write(data)
+try:
+    from bloom_filter import BloomFilter
+    BLOOM_AVAILABLE = True
+except Exception:
+    BLOOM_AVAILABLE = False
 
-def write_output_sink(args, lines, shard_suffix=""):
-    if not args.out:
-        if not args.no_stdout:
-            for ln in lines: print(ln)
+def load_or_create_bloom(path: Optional[str], capacity: int = 10_000_000) -> Any:
+    if not BLOOM_AVAILABLE:
+        return None
+    if path and os.path.exists(path):
+        try:
+            with open(path, "rb") as f:
+                return BloomFilter.load(f)
+        except Exception as e:
+            print(f"[!] Bloom load failed ({e}), falling back to set", file=sys.stderr)
+    bf = BloomFilter(max_elements=capacity, error_rate=0.001)
+    if path:
+        try:
+            with open(path, "wb") as f:
+                bf.dump(f)
+        except Exception:
+            pass
+    return bf
+
+def bloom_add(bf: Any, item: str) -> bool:
+    if bf is None:
+        return False
+    bf.add(item)
+    return True
+
+# -------------------------------------------------
+# Output
+# -------------------------------------------------
+def write_output_sink(args, lines: List[str], shard_suffix: str = "") -> None:
+    if not args.out and not args.no_stdout:
+        for ln in lines:
+            print(ln)
         return
 
-    base = args.out
-    is_gz = base.endswith(".gz")
+    base = args.out or ""
+    is_gz = base.lower().endswith(".gz")
     path = base
-
     if shard_suffix:
         if is_gz:
             base = base[:-3]
@@ -650,19 +731,18 @@ def write_output_sink(args, lines, shard_suffix=""):
     write_lines(path, lines, gz=is_gz, append=append_mode)
 
     if not args.no_stdout:
-        for ln in lines: print(ln)
+        for ln in lines:
+            print(ln)
 
-def split_suffix(i, digits): 
+def split_suffix(i: int, digits: int) -> str:
     return f"_{i:0{digits}d}"
 
-def write_output(args, lines):
+def write_output(args, lines: List[str]) -> None:
     if not lines:
         return
-
     if args.split and args.split > 1 and args.out:
         digits = len(str(args.split - 1))
-        n = len(lines)
-        per = math.ceil(n / args.split)
+        per = math.ceil(len(lines) / args.split)
         idx = 0
         for i in range(args.split):
             chunk = lines[idx:idx + per]
@@ -677,8 +757,8 @@ def write_output(args, lines):
 # -------------------------------------------------
 # Main
 # -------------------------------------------------
-def main():
-    ap = argparse.ArgumentParser(description="PWForge – Multi-mode password generator")
+def main() -> None:
+    ap = argparse.ArgumentParser(description="PWForge – Multi-mode password generator (robust + dedup)")
     ap.add_argument("--mode", choices=[
         "pw","walk","both","mask","passphrase","numeric","syllable","prince",
         "markov","pcfg","mobile-walk","hybrid","combo","neural"
@@ -737,99 +817,164 @@ def main():
     ap.add_argument("--hidden-dim", type=int, default=384)
     ap.add_argument("--num-layers", type=int, default=2)
     ap.add_argument("--dropout", type=float, default=0.3)
-
+    ap.add_argument("--dedup-bloom", type=str, help="Persist Bloom filter to this file for huge runs")
+    ap.add_argument("--dedup-memory", type=int, default=10_000_000,
+                    help="Max passwords kept in memory before falling back to Bloom (0 = unlimited)")
     args = ap.parse_args()
 
-    rnd = random.Random(args.seed if args.seed is not None else secrets.randbits(64))
-
+    # Seed & basics
+    seed = args.seed if args.seed is not None else secrets.randbits(64)
+    rnd = random.Random(seed)
     charset = build_charset(args.charset, args.exclude_ambiguous)
+
+    # Loads
     starts = list("q1az2wsx3edc")
-    if args.starts_file and os.path.exists(args.starts_file):
-        starts = [x.strip().lower() for x in load_lines(args.starts_file) if x.strip()]
+    if args.starts_file:
+        starts = [x.lower() for x in load_lines(args.starts_file) if x]
+
     graph = get_graph(args.keymap, args.walk_allow_shift)
     if args.keymap_file:
         try:
-            with open(args.keymap_file) as f: custom = json.load(f)
-            graph = {str(k).lower():[str(v).lower() for v in vv] for k,vv in custom.items()}
-            if args.walk_allow_shift: graph = {**graph, **GRAPH_SYMBOL}
+            with open(args.keymap_file) as f:
+                custom = json.load(f)
+            graph = {str(k).lower(): [str(v).lower() for v in vv] for k, vv in custom.items()}
+            if args.walk_allow_shift:
+                graph = {**graph, **GRAPH_SYMBOL}
         except Exception as e:
-            print(f"[!] keymap-file: {e}", file=sys.stderr)
+            print(f"[!] keymap-file error: {e}", file=sys.stderr)
 
-    base_words = tuple(load_lines(args.dict) if args.dict else ["password","admin","welcome"])
-    years      = tuple(load_lines(args.years_file) if args.years_file else [str(y) for y in range(1990,2036)])
-    symbols    = tuple(load_lines(args.symbols_file) if args.symbols_file else list("!@#$%^&*?_+-="))
-    bias_terms = tuple(load_lines(args.bias_terms) if args.bias_terms else [])
-    rules      = [ln for ln in load_lines(args.rules) if ln and not ln.startswith('#')] if args.rules else []
+    base_words = tuple(load_lines(args.dict) or ["password", "admin", "welcome"])
+    years      = tuple(load_lines(args.years_file) or [str(y) for y in range(1990, 2036)])
+    symbols    = tuple(load_lines(args.symbols_file) or list("!@#$%^&*?_+-="))
+    bias_terms = tuple(load_lines(args.bias_terms) or [])
+    rules      = [ln for ln in load_lines(args.rules) if ln and not ln.startswith('#')]
+
     no_dict_set = load_dict_set(args.no_dict)
 
+    # Models
     markov_model = None
-    if args.mode in ("markov","estimate_only") and args.markov_train:
-        markov_model = markov_train(load_lines(args.markov_train), order=args.markov_order)
+    if args.mode in ("markov", "estimate_only") and args.markov_train:
+        corpus = load_lines(args.markov_train)
+        if corpus:
+            markov_model = markov_train(corpus, order=args.markov_order)
+        else:
+            print("[!] Markov training corpus empty", file=sys.stderr)
 
     pcfg_model = None
     if args.pcfg_model:
         try:
-            with open(args.pcfg_model) as f: pcfg_model = json.load(f)
-        except: pass
-    elif args.mode in ("pcfg","estimate_only") and args.pcfg_train:
-        pcfg_model = pcfg_train(load_lines(args.pcfg_train))
+            with open(args.pcfg_model) as f:
+                pcfg_model = json.load(f)
+        except Exception as e:
+            print(f"[!] PCFG model load error: {e}", file=sys.stderr)
+    elif args.mode in ("pcfg", "estimate_only") and args.pcfg_train:
+        corpus = load_lines(args.pcfg_train)
+        if corpus:
+            pcfg_model = pcfg_train(corpus)
+        else:
+            print("[!] PCFG training corpus empty", file=sys.stderr)
 
+    # Dedup
+    seen: Set[str] = set()
+    bloom = None
+    if args.dedup_bloom:
+        bloom = load_or_create_bloom(args.dedup_bloom)
+    mem_limit = args.dedup_memory if args.dedup_memory > 0 else float('inf')
+
+    def add_seen(pw: str) -> bool:
+        if pw in seen:
+            return False
+        if bloom and bloom.__contains__(pw):
+            return False
+        if len(seen) >= mem_limit and bloom:
+            for old in list(seen):
+                bloom_add(bloom, old)
+            seen.clear()
+        seen.add(pw)
+        if bloom:
+            bloom_add(bloom, pw)
+        return True
+
+    # Gen map
+    gen_map = {
+        "pw": lambda a, c, r: gen_pw(a, c, r, charset, seen),
+        "walk": lambda a, c, r: gen_walk(a, c, r, graph, starts, seen),
+        "mobile-walk": lambda a, c, r: gen_mobile_walk(a, c, r, seen),
+        "mask": lambda a, c, r: gen_mask(a, c, r, base_words, years, symbols, seen),
+        "passphrase": lambda a, c, r: gen_passphrase(a, c, r, base_words, seen),
+        "numeric": lambda a, c, r: gen_numeric(a, c, r, seen),
+        "syllable": lambda a, c, r: gen_syllable(a, c, r, seen),
+        "prince": lambda a, c, r: gen_prince(a, c, r, base_words, bias_terms, seen),
+        "markov": lambda a, c, r: gen_markov(a, c, r, markov_model, seen),
+        "pcfg": lambda a, c, r: gen_pcfg(a, c, r, pcfg_model, years, symbols, seen),
+        "hybrid": lambda a, c, r: gen_hybrid(a, c, r, base_words, rules, args.mask, years, symbols, seen),
+        "combo": lambda a, c, r: gen_combo(a, c, r, parse_combo(args.combo), gen_map,
+                                          base_words=base_words, years=years, symbols=symbols,
+                                          rules=rules, mask=args.mask, graph=graph, starts=starts,
+                                          model=pcfg_model, bias_terms=bias_terms, seen=seen),
+        "neural": lambda a, c, r: gen_neural(a, c, r, args.model,
+                                            torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+                                            seen)
+    }
+
+    # Early exits
     if args.estimate_only:
-        avg = (args.min+args.max)/2
-        print(json.dumps({"mode":args.mode,"count":args.count,"avg_len":avg}))
+        avg = (args.min + args.max) / 2
+        print(json.dumps({"mode": args.mode, "count": args.count, "avg_len": avg}))
         return
 
-    if args.dry_run: args.count = int(args.dry_run)
+    if args.dry_run:
+        args.count = int(args.dry_run)
 
-    targets = {k:0 for k in [
-        "pw","walk","mask","passphrase","numeric","syllable","prince",
-        "markov","pcfg","mobile-walk","hybrid","combo","neural"
-    ]}
+    # Targets
+    targets: Dict[str, int] = defaultdict(int)
     if args.mode == "both":
-        half = args.count//2
-        targets["pw"], targets["walk"] = half + args.count%2, half
+        half = args.count // 2
+        targets["pw"], targets["walk"] = half + args.count % 2, half
     else:
         targets[args.mode] = args.count
 
+    # Loop
     start = now()
     produced = 0
     last_tick = start
     CHUNK = max(1, int(args.chunk))
-
-    gen_map = {
-        "pw": lambda a,c,r: gen_pw(a,c,r,charset),
-        "walk": lambda a,c,r: gen_walk(a,c,r,graph,starts),
-        "mobile-walk": lambda a,c,r: gen_mobile_walk(a,c,r),
-        "mask": lambda a,c,r: gen_mask(a,c,r,base_words,years,symbols),
-        "passphrase": lambda a,c,r: gen_passphrase(a,c,r,base_words),
-        "numeric": lambda a,c,r: gen_numeric(a,c,r),
-        "syllable": lambda a,c,r: gen_syllable(a,c,r),
-        "prince": lambda a,c,r: gen_prince(a,c,r,base_words,bias_terms),
-        "markov": lambda a,c,r: gen_markov(a,c,r,markov_model),
-        "pcfg": lambda a,c,r: gen_pcfg(a,c,r,pcfg_model,years,symbols),
-        "hybrid": lambda a,c,r: gen_hybrid(a,c,r,base_words,rules,args.mask,years,symbols),
-        "combo": lambda a,c,r: gen_combo(a,c,r,parse_combo(args.combo),gen_map,
-                                         base_words=base_words,years=years,symbols=symbols,
-                                         rules=rules,mask=args.mask,graph=graph,starts=starts,
-                                         model=pcfg_model,bias_terms=bias_terms),
-        "neural": lambda a,c,r: gen_neural(a,c,r,args.model)
-    }
 
     for mode, tgt in targets.items():
         if tgt <= 0: continue
         remaining = tgt
         while remaining > 0:
             chunk = min(CHUNK, remaining)
-            lines = gen_map.get(mode, lambda *x: [])(args, chunk, rnd)
+            try:
+                lines = gen_map.get(mode, lambda *x: [])(args, chunk, rnd)
+            except Exception as e:
+                print(f"[!] Generator {mode} crashed: {e}", file=sys.stderr)
+                lines = []
+
             if args.min_entropy > 0 or args.no_dict:
                 lines = apply_entropy_filter(lines, args.min_entropy, no_dict_set)
-            write_output(args, lines)
-            produced += len(lines)
-            remaining -= len(lines)
+
+            final = [pw for pw in lines if add_seen(pw)]
+            write_output(args, final)
+            produced += len(final)
+            remaining -= len(final)
             last_tick = meter_printer(start, produced, last_tick, args.meter)
+
+    if bloom and args.dedup_bloom:
+        try:
+            with open(args.dedup_bloom, "wb") as f:
+                bloom.dump(f)
+        except Exception as e:
+            print(f"[!] Bloom save failed: {e}", file=sys.stderr)
+
+    print(f"[i] Finished – {produced:,} unique passwords generated.", file=sys.stderr)
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n[!] Interrupted", file=sys.stderr)
+        print("\n[!] Interrupted by user", file=sys.stderr)
+        sys.exit(130)
+    except Exception as exc:
+        print(f"\n[!] Unexpected error: {exc}", file=sys.stderr)
+        sys.exit(1)
