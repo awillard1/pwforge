@@ -62,8 +62,10 @@ john --wordlist=walks.txt --format=nt --fork=16 hashes/*
 Neural generation uses a character‑level LSTM checkpoint (`.pt`) and samples candidates up to your length bounds.
 
 ```bash
-# 2M neural candidates to hashcat
-python3 pwforge.py --mode neural --model finetuned_model.pt   --batch-size 512 --max-gen-len 32   --min 8 --max 20 --count 2000000 | hashcat -a 0 -m 1000 hashes.ntlm
+# 1M neural candidates to hashcat
+python3 pwforge.py --mode neural --model finetuned_model.pt   --batch-size 512 --max-gen-len 32 --min 8 --max 20 --count 1000000 | hashcat -a 0 -m 1000 hashes.ntlm
+or
+python3 ../pwforge/pwforge.py --mode neural --count 1000000 --min 8 --max 24  --chunk 10000 --model ../neural/master_lstm.pt --out ../candidates.txt --append
 ```
 
 - PWForge auto‑selects **CUDA** if available, else CPU.
