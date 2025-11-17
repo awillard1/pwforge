@@ -84,7 +84,10 @@ Neural generation uses a character-level LSTM checkpoint (`.pt`) and samples can
 # 1M neural candidates to hashcat
 python3 pwforge.py   --mode neural   --model finetuned_model.pt   --batch-size 512   --max-gen-len 32   --min 8 --max 20   --count 1000000   | hashcat -a 0 -m 1000 hashes.ntlm
 ```
-
+To not have the output sent to the screen on windows
+```
+python3 ../pwforge/pwforge.py --mode neural --count 100000 --min 8 --max 16 --no-stdout  --chunk 1000 --meter 0 --model ../neural/master_lstm.pt 2>NUL | hashcat.exe -a 0 -m 1000 -o master.txt ../hashes/ntjtr.txt -O  --self-test-disable --bitmap-max 26 --username --session=hacktastic --keep-guessing --stdin-timeout 1
+```
 Example file output:
 
 ```bash
