@@ -238,8 +238,10 @@ python3 pwforge.py   --mode pw   --count 10000000   --out /dev/shm/pw.txt   --no
 ```
 If you must access c because hashcat is installed on windows, here is a sample command line using WSL:
 ```bash
-(base) ┌──(willard㉿REDACTED)-[/mnt/c/PenTesting/data/hashcat-7.0.0]
-└─$ python3 ~/pwforge/pwforge.py --mode neural --count 1000000 --min 8 --max 18  --chunk 1000 --meter 1000 --model /mnt/c/PenTesting/data/neural/master_lstm.pt | ./hashcat.exe -a 0 -m 1000 -o master.txt ../hashes/ntjtr.txt -O  --self-test-disable --bitmap-max 26 --username --session=hacktastic --keep-guessing --stdin-timeout 1
+(base) ┌──(willard㉿REDACTED)-[/mnt/c/PenTesting/data/hashcat-6.2.6]
+└─$ python3 ~/pwforge/pwforge.py --mode neural --count 10000 --min 8 --max 16  --meter 0 --model /mnt/c/PenTesting/data/
+neural/master_lstm.pt 2>/dev/null | ./hashcat.exe -a 0 -m 1000 -o master.txt ../hashes/ntjtr.txt -O  --self-test-disable
+ --bitmap-max 26 --username --session=hacktastic --keep-guessing --stdin-timeout 1
 ```
 ---
 
