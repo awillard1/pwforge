@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PWForge – Ultimate Password Generator (Neural + All Modes) – FULLY FIXED
+# PWForge – Multi-mode password generator (Neural + All Modes) – patched for robust neural batching & transform post-filter
 # -------------------------------------------------
 import sys, os, argparse, random, secrets, string, time, json, gzip, math, re
 import numpy as np
@@ -450,7 +450,7 @@ def pcfg_sample(model: Dict[str, Any], rng: random.Random, min_len: int, max_len
     chosen = model["patterns"][lo][0]
     parts = []
     for slot in chosen.split("+"):
-        if slot in model[" | lex"]:
+        if slot in model["lex"]:
             parts.append(rng.choice(model["lex"][slot]))
         elif slot.startswith("DIG"):
             n = int(slot[3:])
@@ -558,10 +558,15 @@ def parse_combo(spec: Optional[str]) -> List[Tuple[str, float]]:
     if total == 0: return []
     return list(zip(modes, [w/total for w in weights]))
 
-def gen_combo(args, count: int, rng: random.Random, mode_weights: List[Tuple[str, float]], gen_map: Dict[str, Any], base_words: Tuple[str, ...], years: Tuple[str, ...], symbols: Tuple[str, ...], rules: List[str], mask: Optional[str], graph: Dict[str, List[str]], starts: List[str], model: Optional[Dict[str, Any]], bias_terms: Tuple[str, ...], seen: Set[str]) -> List[str]:
+def gen_combo(args, count: int, rng: random.Random, mode_weights: List[Tuple[str, float]], gen_map: Dict[str, Any],
+              base_words: Tuple[str, ...], years: Tuple[str, ...], symbols: Tuple[str, ...],
+              rules: List[str], mask: Optional[str], graph: Dict[str, List[str]], starts: List[str],
+              model: Optional[Dict[str, Any]], bias_terms: Tuple[str, ...], seen: Set[str]) -> List[str]:
     out: List[str] = []
     attempts = 0
     max_attempts = count * 10
+    if not mode_weights:
+        return out
     mode_names = [m for m, _ in mode_weights]
     probs = [w for _, w in mode_weights]
     while len(out) < count and attempts < max_attempts:
@@ -569,27 +574,16 @@ def gen_combo(args, count: int, rng: random.Random, mode_weights: List[Tuple[str
         mode = rng.choices(mode_names, probs)[0]
         gen = gen_map.get(mode)
         if gen:
-            if mode == "pcfg":
-                cand = gen(args, 1, rng, model, years, symbols, seen)[0]
-            elif mode == "walk":
-                cand = gen(args, 1, rng, graph, starts, seen)[0]
-            elif mode == "prince":
-                cand = gen(args, 1, rng, base_words, bias_terms, seen)[0]
-            elif mode == "mask":
-                cand = gen(args, 1, rng, base_words, years, symbols, seen)[0]
-            elif mode == "passphrase":
-                cand = gen(args, 1, rng, base_words, seen)[0]
-            elif mode == "hybrid":
-                cand = gen(args, 1, rng, base_words, rules, mask, years, symbols, seen)[0]
-            else:
-                cand = gen(args, 1, rng, seen)[0]
+            # many generators return a list; call accordingly
+            lst = gen(args, 1, rng)
+            cand = lst[0] if lst else None
             if cand and cand not in seen:
                 seen.add(cand)
                 out.append(cand)
     return out
 
 # -------------------------------------------------
-# Neural – FINAL FIXED VERSION
+# Neural (simple generation function — returns list and respects args.max by default)
 # -------------------------------------------------
 if TORCH_AVAILABLE and nn is not None:
     class CharLSTM(nn.Module):
@@ -606,6 +600,11 @@ if TORCH_AVAILABLE and nn is not None:
     @torch.no_grad()
     def gen_neural(args, count: int, rng: random.Random, model_path: Optional[str],
                    device: Optional[torch.device], seen: Set[str]) -> List[str]:
+        """
+        Basic neural generator that produces up to 'count' candidates and adds them to 'seen'.
+        It uses args.max as default generation length if --max-gen-len isn't provided.
+        Intended for batch calls; higher-level code should call gen_neural repeatedly in small batches.
+        """
         if device is None:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -631,7 +630,7 @@ if TORCH_AVAILABLE and nn is not None:
             print(f"[!] Failed to detect vocab_size: {e}", file=sys.stderr)
             return []
 
-        # --- CHAR MAPPING: 93 printable chars ---
+        # --- CHAR MAPPING: printable chars ---
         PRINTABLE = ''.join(chr(i) for i in range(33, 126))  # ! to }
         if len(PRINTABLE) != vocab_size - 1:
             print(f"[!] Expected {vocab_size - 1} printable chars, got {len(PRINTABLE)}", file=sys.stderr)
@@ -639,8 +638,8 @@ if TORCH_AVAILABLE and nn is not None:
 
         CHAR_TO_IDX = {c: i for i, c in enumerate(PRINTABLE)}
         IDX_TO_CHAR = {i: c for c, i in CHAR_TO_IDX.items()}
-        EOS_IDX = vocab_size - 1  # 93
-        BOS_IDX = CHAR_TO_IDX['!']
+        EOS_IDX = vocab_size - 1  # dedicated EOS
+        BOS_IDX = CHAR_TO_IDX.get('!', 0)
 
         print(f"[i] Using dedicated EOS token (index {EOS_IDX})", file=sys.stderr)
 
@@ -664,14 +663,16 @@ if TORCH_AVAILABLE and nn is not None:
 
         # --- GENERATE WITH TOP-K + RETRY ---
         out: List[str] = []
-        max_gen = getattr(args, "max_gen_len", 64) or 64
+        max_gen = getattr(args, "max_gen_len", None) or args.max
         temperature = 1.0
         top_k = 50
         attempts = 0
-        max_attempts = count * 20
+        max_attempts = max(200, count * 20)  # allow reasonable retries internally
 
         while len(out) < count and attempts < max_attempts:
             attempts += 1
+            target = rng.randint(args.min, max_gen) if max_gen >= args.min else args.min
+
             seq = torch.full((1, 1), BOS_IDX, dtype=torch.long, device=device)
             hidden = None
 
@@ -687,6 +688,9 @@ if TORCH_AVAILABLE and nn is not None:
                     break
                 seq = torch.cat([seq, torch.tensor([[nxt]], device=device)], dim=1)
 
+                if seq.size(1) - 1 >= target and rng.random() < 0.5:
+                    break
+
             tokens = seq[0, 1:].cpu().numpy()
             eos_pos = np.where(tokens == EOS_IDX)[0]
             if len(eos_pos) > 0:
@@ -697,9 +701,10 @@ if TORCH_AVAILABLE and nn is not None:
                 pw += ''.join(rng.choice(PRINTABLE) for _ in range(args.min - len(pw)))
             pw = pw[:args.max]
 
-            if len(pw) >= args.min and pw not in seen:
+            if len(pw) >= args.min and class_ok(pw, getattr(args, "require", None)) and pw not in seen:
                 seen.add(pw)
                 out.append(pw)
+                # progress trace
                 print(f"{pw}", file=sys.stderr)
 
             if len(out) >= count:
@@ -754,6 +759,113 @@ def write_output(args, lines: List[str]) -> None:
             idx += per
     else:
         write_output_sink(args, lines)
+
+# -------------------------------------------------
+# Post-filter that transforms long symbol runs (truncate) instead of discarding
+# -------------------------------------------------
+def _truncate_symbol_runs(s: str, max_run: int) -> str:
+    if max_run <= 0:
+        return s
+    pat = re.compile(r'([^\w\s])\1{' + str(max_run) + ',}')
+    def repl(m):
+        return m.group(1) * max_run
+    return pat.sub(repl, s)
+
+def neural_postfilter_transform(lines: List[str], args, base_words_set: Set[str], no_dict_set: Set[str]) -> List[str]:
+    """
+    Transform neural-generated candidates:
+      - truncate excessively long repeated punctuation runs (e.g. '*****' -> '****')
+      - collapse extremely long runs of letters/digits
+      - drop explicit 4-digit years and month names (optional)
+      - apply class_ok and entropy checks
+    Returns transformed and filtered list.
+    """
+    MAX_SYMBOL_RUN = 4  # keep at most this many repeated punctuation chars
+    months = {
+        "jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec",
+        "january","february","march","april","may","june","july","august","september","october","november","december"
+    }
+    out = []
+    for s in lines:
+        if not s:
+            continue
+        # truncate symbol runs
+        s2 = _truncate_symbol_runs(s, MAX_SYMBOL_RUN)
+        # collapse long alnum runs to at most 8
+        s2 = re.sub(r'([A-Za-z0-9])\1{8,}', lambda m: m.group(1) * 8, s2)
+        low = s2.lower()
+
+        # drop explicit years and month names
+        if re.search(r'\b(19|20)\d{2}\b', low):
+            continue
+        if any(m in low for m in months):
+            continue
+
+        # avoid blacklisted dict substrings if provided
+        if no_dict_set and any(w in low for w in no_dict_set):
+            continue
+
+        if not class_ok(s2, getattr(args, "require", None)):
+            continue
+
+        if getattr(args, "min_entropy", 0.0) > 0 and shannon_entropy(s2) < args.min_entropy:
+            continue
+
+        s2 = s2[:args.max]
+        out.append(s2)
+    return out
+
+# -------------------------------------------------
+# Neural batch collector helper
+# -------------------------------------------------
+def collect_neural_candidates(args, tgt: int, rnd: random.Random, model_path: str,
+                              device, global_seen: Set[str],
+                              batch_size: int = 100, max_rounds: int = 50,
+                              postfilter_fn = None, base_words: Tuple[str, ...] = ()):
+    """
+    Iteratively call gen_neural in batches and collect up to tgt unique, post-filtered passwords.
+    Returns list of collected items (may be fewer than tgt).
+    """
+    collected: List[str] = []
+    rounds = 0
+    base_set = set(w.lower() for w in base_words) if base_words else set()
+    no_dict_set = load_dict_set(getattr(args, "no_dict", None))
+
+    while len(collected) < tgt and rounds < max_rounds:
+        rounds += 1
+        want = min(batch_size, tgt - len(collected))
+        local_seen: Set[str] = set()
+        try:
+            batch_out = gen_neural(args, want, rnd, model_path, device, local_seen)
+        except Exception as e:
+            print(f"[!] gen_neural error in batch {rounds}: {e}", file=sys.stderr)
+            break
+
+        if not batch_out:
+            print(f"[i] gen_neural returned 0 results on round {rounds}; stopping early", file=sys.stderr)
+            break
+
+        if postfilter_fn:
+            filtered = postfilter_fn(batch_out, args, base_set, no_dict_set)
+        else:
+            filtered = batch_out
+
+        added_this_round = 0
+        for pw in filtered:
+            if len(collected) >= tgt:
+                break
+            if pw and pw not in global_seen:
+                global_seen.add(pw)
+                collected.append(pw)
+                added_this_round += 1
+
+        print(f"[i] neural batch {rounds}: requested {want}, returned {len(batch_out)}, kept {added_this_round} (total {len(collected)}/{tgt})", file=sys.stderr)
+
+        if added_this_round == 0 and rounds >= max_rounds // 2:
+            print(f"[i] No progress in recent rounds; stopping after {rounds} rounds", file=sys.stderr)
+            break
+
+    return collected
 
 # -------------------------------------------------
 # Main
@@ -819,6 +931,13 @@ def main() -> None:
     ap.add_argument("--dropout", type=float, default=0.3)
     ap.add_argument("--dedup-bloom", type=str)
     ap.add_argument("--dedup-memory", type=int, default=10_000_000)
+
+    # neural batching options
+    ap.add_argument("--neural-batch", type=int, default=100,
+                    help="Generate neural candidates in batches of this size (default 100)")
+    ap.add_argument("--neural-max-rounds", type=int, default=50,
+                    help="Max number of batches to run in neural mode (default 50)")
+
     args = ap.parse_args()
 
     seed = args.seed if args.seed is not None else secrets.randbits(64)
@@ -867,7 +986,7 @@ def main() -> None:
 
     # --- DEDUP: Global + Local for Neural ---
     seen: Set[str] = set()  # global dedup
-    neural_seen: Set[str] = set()  # local for neural
+    neural_seen: Set[str] = set()  # local for neural (not heavily used in batching mode)
 
     gen_map = {
         "pw": lambda a, c, r: gen_pw(a, c, r, charset, seen),
@@ -904,7 +1023,7 @@ def main() -> None:
     else:
         targets[args.mode] = args.count
 
-        start = now()
+    start = now()
     produced = 0
     last_tick = start
 
@@ -913,14 +1032,26 @@ def main() -> None:
             continue
 
         if mode == "neural":
-            # Clear local dedup set
             neural_seen.clear()
-            lines = gen_neural(args, tgt, rnd, args.model,
-                              torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-                              neural_seen)
 
-            # Use local seen as final output
-            final = list(neural_seen)
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            batch_size = max(1, int(getattr(args, "neural_batch", 100)))
+            max_rounds = max(1, int(getattr(args, "neural_max_rounds", 50)))
+
+            collected = collect_neural_candidates(
+                args, tgt, rnd, args.model, device,
+                global_seen=seen,
+                batch_size=batch_size,
+                max_rounds=max_rounds,
+                postfilter_fn=neural_postfilter_transform,
+                base_words=base_words
+            )
+
+            final = collected[:tgt]
+            if len(final) < tgt:
+                print(f"[!] Requested {tgt} but only collected {len(final)} unique neural passwords after {max_rounds} rounds. "
+                      "Increase --neural-batch/--neural-max-rounds or relax post-filtering.", file=sys.stderr)
+
         else:
             lines = gen_map.get(mode, lambda *x: [])(args, tgt, rnd)
 
