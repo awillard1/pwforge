@@ -700,7 +700,7 @@ if TORCH_AVAILABLE and nn is not None:
             if len(pw) >= args.min and pw not in seen:
                 seen.add(pw)
                 out.append(pw)
-                print(f"[+] Generated: {pw}", file=sys.stderr)
+                print(f"{pw}", file=sys.stderr)
 
             if len(out) >= count:
                 break
